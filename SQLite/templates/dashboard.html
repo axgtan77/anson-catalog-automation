@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+{% block title %}Dashboard{% endblock %}
+{% block content %}
+<h2>Encoding Progress</h2>
+
+<div class="row" style="justify-content:space-between;margin-top:10px">
+  <div class="row">
+    <a class="btn {% if stats.scope=='active' %}btn-primary{% else %}btn-outline{% endif %}" href="{{ url_for('index', scope='active') }}">Active</a>
+    <a class="btn {% if stats.scope=='all' %}btn-primary{% else %}btn-outline{% endif %}" href="{{ url_for('index', scope='all') }}">All</a>
+  </div>
+</div>
+
+<div class="stats-grid">
+  <div class="stat-card"><div class="stat-number">{{ "{:,}".format(stats.total_all) }}</div><div class="stat-label">Total Products (All)</div></div>
+  <div class="stat-card"><div class="stat-number">{{ "{:,}".format(stats.total_active) }}</div><div class="stat-label">Active Products</div></div>
+  <div class="stat-card"><div class="stat-number">{{ "{:,}".format(stats.complete) }}</div><div class="stat-label">Complete ({{ stats.scope|capitalize }})</div></div>
+  <div class="stat-card"><div class="stat-number">{{ "{:,}".format(stats.needs_work) }}</div><div class="stat-label">Needs Work ({{ stats.scope|capitalize }})</div></div>
+</div>
+
+<div class="stats-grid">
+  <div class="stat-card"><div class="stat-number">{{ "{:,}".format(stats.missing_photos) }}</div><div class="stat-label">Missing Photos ({{ stats.scope|capitalize }})</div></div>
+</div>
+
+<div class="card">
+  <h3>Issues Breakdown ({{ stats.scope|capitalize }} + Needs Work)</h3>
+  <table>
+    <thead><tr><th>Issue Type</th><th>Count</th><th>Action</th></tr></thead>
+    <tbody>
+      {% for item in breakdown %}
+      <tr>
+        <td>{{ item.data_quality }}</td>
+        <td>{{ "{:,}".format(item.count) }}</td>
+        <td><a class="btn btn-primary" href="{{ url_for('products_list', scope=stats.scope, filter=item.data_quality) }}">Fix These</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+
+<div class="card">
+  <h3>Quick Actions</h3>
+  <div class="row">
+    <a class="btn btn-primary" href="{{ url_for('products_list', scope=stats.scope, filter='needs_work') }}">Start Encoding</a>
+    <a class="btn btn-secondary" href="{{ url_for('products_list', scope=stats.scope, filter='all') }}">View {{ stats.scope|capitalize }} Products</a>
+    <a class="btn btn-outline" href="{{ url_for('products_list', scope=stats.scope, filter='needs_work', missing_photos=1) }}">Fix Missing Photos</a>
+  </div>
+</div>
+{% endblock %}

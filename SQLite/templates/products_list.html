@@ -1,0 +1,115 @@
+{% extends "base.html" %}
+{% block title %}Products{% endblock %}
+{% block content %}
+<h2>Products</h2>
+
+<div class="card">
+  <form method="get" class="row" style="gap:10px">
+    <div style="min-width:160px">
+      <label style="font-weight:800;font-size:13px">Scope</label>
+      <select name="scope" onchange="this.form.submit()">
+        <option value="active" {% if scope=='active' %}selected{% endif %}>Active</option>
+        <option value="all" {% if scope=='all' %}selected{% endif %}>All</option>
+      </select>
+    </div>
+
+    <div style="min-width:200px;flex:1">
+      <label style="font-weight:800;font-size:13px">Filter</label>
+      <select name="filter" onchange="this.form.submit()">
+        <option value="needs_work" {% if filter_type=='needs_work' %}selected{% endif %}>Needs Work</option>
+        <option value="all" {% if filter_type=='all' %}selected{% endif %}>All</option>
+        <option value="COMPLETE" {% if filter_type=='COMPLETE' %}selected{% endif %}>COMPLETE</option>
+        <option value="NEEDS_CATEGORY" {% if filter_type=='NEEDS_CATEGORY' %}selected{% endif %}>NEEDS_CATEGORY</option>
+        <option value="NEEDS_DESCRIPTION" {% if filter_type=='NEEDS_DESCRIPTION' %}selected{% endif %}>NEEDS_DESCRIPTION</option>
+        <option value="NEEDS_NAME" {% if filter_type=='NEEDS_NAME' %}selected{% endif %}>NEEDS_NAME</option>
+        <option value="NEEDS_BRAND" {% if filter_type=='NEEDS_BRAND' %}selected{% endif %}>NEEDS_BRAND</option>
+        <option value="NEEDS_SIZE" {% if filter_type=='NEEDS_SIZE' %}selected{% endif %}>NEEDS_SIZE</option>
+      </select>
+    </div>
+
+    <div style="min-width:160px">
+      <label style="font-weight:800;font-size:13px">Missing Photos</label>
+      <select name="missing_photos" onchange="this.form.submit()">
+        <option value="0" {% if not missing_photos %}selected{% endif %}>No</option>
+        <option value="1" {% if missing_photos %}selected{% endif %}>Yes</option>
+      </select>
+    </div>
+
+    <div style="min-width:240px;flex:1">
+      <label style="font-weight:800;font-size:13px">Search</label>
+      <input type="text" name="search" value="{{ search }}" placeholder="MERKEY / name / description">
+    </div>
+
+    <div style="min-width:140px">
+      <label style="font-weight:800;font-size:13px">Per page</label>
+      <select name="per_page" onchange="this.form.submit()">
+        {% for n in [25,50,100,200] %}
+          <option value="{{n}}" {% if per_page==n %}selected{% endif %}>{{n}}</option>
+        {% endfor %}
+      </select>
+    </div>
+
+    <div style="align-self:flex-end">
+      <button class="btn btn-primary" type="submit">Apply</button>
+    </div>
+  </form>
+</div>
+
+<div class="card">
+  <div style="margin-bottom:10px;color:#666">Showing {{ "{:,}".format(total) }} result(s)</div>
+  <table>
+    <thead>
+      <tr>
+        <th>MERKEY</th>
+        <th>Description</th>
+        <th>Name</th>
+        <th>Brand</th>
+        <th>Category</th>
+        <th>Size</th>
+        <th>Status</th>
+        <th>Photo</th>
+        <th>Sales 24M</th>
+        <th>Action</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for p in products %}
+      <tr>
+        <td style="white-space:nowrap">{{ p.merkey }}</td>
+        <td>{{ p.description }}</td>
+        <td>{{ p.name or "-" }}</td>
+        <td>{{ p.brand or "-" }}</td>
+        <td>{{ p.category or "-" }}</td>
+        <td>{{ p.size or "-" }}</td>
+        <td>
+          {% if p.data_quality == 'COMPLETE' %}
+            <span class="badge b-ok">COMPLETE</span>
+          {% else %}
+            <span class="badge b-warn">{{ p.data_quality }}</span>
+          {% endif %}
+        </td>
+        <td>
+          {% if p.missing_photo == 1 %}
+            <span class="badge b-bad">NO PHOTO</span>
+          {% else %}
+            <span class="badge b-ok">PHOTO</span>
+          {% endif %}
+        </td>
+        <td>{{ "{:,}".format(p.txn_count_24m) }}</td>
+        <td><a class="btn btn-primary" href="{{ url_for('product_edit', merkey=p.merkey) }}">Edit</a></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <div class="pagination">
+    {% for p in range(1, total_pages+1) %}
+      {% if p == page %}
+        <a class="active" href="#">{{ p }}</a>
+      {% elif p <= 2 or p > total_pages-2 or (p >= page-2 and p <= page+2) %}
+        <a href="{{ url_for('products_list', page=p, scope=scope, filter=filter_type, search=search, missing_photos=1 if missing_photos else 0, per_page=per_page) }}">{{ p }}</a>
+      {% endif %}
+    {% endfor %}
+  </div>
+</div>
+{% endblock %}

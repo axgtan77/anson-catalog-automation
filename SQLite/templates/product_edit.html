@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+{% block title %}Edit {{ product.merkey }}{% endblock %}
+{% block content %}
+<div class="row" style="justify-content:space-between;align-items:flex-end">
+  <div>
+    <h2>Edit Product</h2>
+    <div style="color:#666;margin-top:4px">MERKEY: <b>{{ product.merkey }}</b></div>
+  </div>
+  <div class="row">
+    <a class="btn btn-secondary" href="{{ url_for('products_list') }}">Back to list</a>
+  </div>
+</div>
+
+<div class="card">
+  <div class="row" style="align-items:flex-start">
+    <div class="imgbox">
+      {% if product.image_url %}
+        <img src="{{ product.image_url }}" alt="Product image">
+      {% else %}
+        <div style="color:#777;font-weight:800">No image</div>
+      {% endif %}
+    </div>
+
+    <div style="flex:1;min-width:260px">
+      <div class="row" style="margin-bottom:10px">
+        <div><span class="badge {% if product.data_quality=='COMPLETE' %}b-ok{% else %}b-warn{% endif %}">{{ product.data_quality }}</span></div>
+        {% if not product.image_url %}
+          <div><span class="badge b-bad">NO PHOTO</span></div>
+        {% endif %}
+      </div>
+
+      <div class="row" style="gap:16px;color:#444">
+        <div><b>Sales (24M)</b><div>{{ "{:,}".format(product.txn_count_24m or 0) }}</div></div>
+        <div><b>Velocity</b><div>{{ "{:.2f}".format(product.velocity_score or 0) }}</div></div>
+        <div><b>Last sale</b><div>{{ product.last_sale_date or "-" }}</div></div>
+      </div>
+
+      <hr style="border:0;border-top:1px solid #eee;margin:14px 0">
+
+      <form method="post" action="{{ url_for('upload_photo', merkey=product.merkey) }}" enctype="multipart/form-data">
+        <label style="font-weight:900;margin-bottom:6px;display:block">Add / Take Photo (phone camera)</label>
+        <div class="row">
+          <input type="file" name="photo" accept="image/*" capture="environment" required>
+          <button type="submit" class="btn btn-primary">Upload → White BG → S3</button>
+        </div>
+        <div style="color:#666;font-size:12px;margin-top:6px">
+          Uses CanonicalBarcode (primary barcode) as filename when available, otherwise MERKEY.
+          Uploads to S3: <b>ansonsupermart.com/images/</b>
+        </div>
+      </form>
+    </div>
+  </div>
+</div>
+
+<div class="card">
+  <form method="post" action="{{ url_for('product_update', merkey=product.merkey) }}">
+    <div class="row" style="gap:14px;align-items:flex-start">
+      <div style="flex:2;min-width:260px">
+        <label>Description *</label>
+        <textarea name="description">{{ product.description or "" }}</textarea>
+      </div>
+
+      <div style="flex:1;min-width:220px">
+        <label>Product Name *</label>
+        <input type="text" name="name" value="{{ product.name or '' }}">
+      </div>
+
+      <div style="flex:1;min-width:220px">
+        <label>Brand *</label>
+        <input type="text" name="brand" value="{{ product.brand_name or '' }}" list="brandlist">
+        <datalist id="brandlist">
+          {% for b in brands %}
+            <option value="{{ b.name }}"></option>
+          {% endfor %}
+        </datalist>
+      </div>
+    </div>
+
+    <div class="row" style="gap:14px;margin-top:12px">
+      <div style="flex:1;min-width:220px">
+        <label>Department</label>
+        <select name="department_id">
+          <option value="">-- Select --</option>
+          {% for d in departments %}
+            <option value="{{ d.id }}" {% if product.department_id==d.id %}selected{% endif %}>{{ d.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div style="flex:1;min-width:220px">
+        <label>Category *</label>
+        <select name="category_id">
+          <option value="">-- Select --</option>
+          {% for c in categories %}
+            <option value="{{ c.id }}" {% if product.category_id==c.id %}selected{% endif %}>{{ c.name }}</option>
+          {% endfor %}
+        </select>
+      </div>
+
+      <div style="flex:1;min-width:220px">
+        <label>Size *</label>
+        <input type="text" name="size" value="{{ product.size or '' }}" placeholder="e.g. 600 g, 1 L">
+      </div>
+
+      <div style="flex:1;min-width:220px">
+        <label>Weight/Volume</label>
+        <input type="text" name="weight_volume" value="{{ product.weight_volume or '' }}">
+      </div>
+
+      <div style="flex:1;min-width:220px">
+        <label>Unit</label>
+        <input type="text" name="unit" value="{{ product.unit_of_measurement or '' }}">
+      </div>
+    </div>
+
+    <div class="row" style="gap:14px;margin-top:12px">
+      <div style="flex:1">
+        <label>Notes</label>
+        <input type="text" name="notes" value="">
+      </div>
+    </div>
+
+    <div class="row" style="margin-top:14px">
+      <button type="submit" class="btn btn-primary">Save Changes</button>
+      <a class="btn btn-secondary" href="{{ url_for('products_list') }}">Cancel</a>
+    </div>
+  </form>
+</div>
+{% endblock %}

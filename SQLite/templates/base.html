@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Anson Product Encoder{% endblock %}</title>
+  <style>
+    *{margin:0;padding:0;box-sizing:border-box}
+    body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Arial,sans-serif;line-height:1.5;color:#222;background:#f5f5f5}
+    header{background:#E31E24;color:#fff;padding:18px 0;box-shadow:0 2px 4px rgba(0,0,0,.1)}
+    .container{max-width:1200px;margin:0 auto;padding:18px}
+    header h1{font-size:22px;font-weight:700}
+    .nav{margin-top:12px;display:flex;gap:10px;flex-wrap:wrap}
+    .nav a{color:#fff;text-decoration:none;padding:8px 14px;border-radius:6px;background:rgba(255,255,255,.12)}
+    .nav a.active{background:rgba(255,255,255,.28)}
+    .card{background:#fff;border-radius:10px;padding:18px;margin:18px 0;box-shadow:0 2px 4px rgba(0,0,0,.08)}
+    .stats-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin:18px 0}
+    .stat-card{background:#fff;border-radius:10px;padding:16px;text-align:center;box-shadow:0 2px 4px rgba(0,0,0,.08)}
+    .stat-number{font-size:32px;font-weight:800;color:#E31E24}
+    .stat-label{color:#666;margin-top:6px;font-size:13px}
+    table{width:100%;border-collapse:collapse}
+    th,td{padding:10px;border-bottom:1px solid #eee;text-align:left;vertical-align:top}
+    th{background:#fafafa;font-weight:700}
+    .btn{display:inline-block;padding:10px 14px;border-radius:8px;text-decoration:none;border:0;cursor:pointer;font-weight:700;font-size:14px}
+    .btn-primary{background:#E31E24;color:#fff}
+    .btn-secondary{background:#6c757d;color:#fff}
+    .btn-outline{background:#fff;color:#E31E24;border:1px solid #E31E24}
+    .badge{display:inline-block;padding:4px 8px;border-radius:999px;font-size:12px;font-weight:800}
+    .b-ok{background:#d4edda;color:#155724}
+    .b-warn{background:#fff3cd;color:#856404}
+    .b-bad{background:#f8d7da;color:#721c24}
+    .row{display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+    input[type="text"],select,textarea{width:100%;padding:10px;border:1px solid #ddd;border-radius:8px}
+    textarea{min-height:90px}
+    .pagination{display:flex;gap:8px;justify-content:center;margin-top:14px;flex-wrap:wrap}
+    .pagination a{padding:8px 12px;background:#fff;border:1px solid #ddd;border-radius:8px;text-decoration:none;color:#333}
+    .pagination a.active{background:#E31E24;color:#fff;border-color:#E31E24}
+    .flash{padding:10px 12px;border-radius:10px;margin:12px 0}
+    .flash.success{background:#d4edda;color:#155724}
+    .flash.error{background:#f8d7da;color:#721c24}
+    .imgbox{width:220px;height:220px;border:1px solid #eee;border-radius:12px;display:flex;align-items:center;justify-content:center;overflow:hidden;background:#fafafa}
+    .imgbox img{width:100%;height:100%;object-fit:contain;background:#fff}
+    @media(max-width:768px){.container{padding:12px}.imgbox{width:100%;height:260px}}
+  </style>
+</head>
+<body>
+<header>
+  <div class="container">
+    <h1>🏪 Anson Supermart - Product Encoder</h1>
+    <div class="nav">
+      <a href="{{ url_for('index', scope=request.args.get('scope','active')) }}" class="{% if request.endpoint == 'index' %}active{% endif %}">Dashboard</a>
+      <a href="{{ url_for('products_list', scope=request.args.get('scope','active')) }}" class="{% if request.endpoint in ['products_list','product_edit'] %}active{% endif %}">Products</a>
+    </div>
+  </div>
+</header>
+<div class="container">
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+      {% for category, msg in messages %}
+        <div class="flash {{ category }}">{{ msg }}</div>
+      {% endfor %}
+    {% endif %}
+  {% endwith %}
+  {% block content %}{% endblock %}
+</div>
+</body>
+</html>

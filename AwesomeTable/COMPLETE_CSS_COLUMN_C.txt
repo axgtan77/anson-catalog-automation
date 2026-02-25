@@ -1,0 +1,296 @@
+# Complete CSS Code for Template Sheet - Column C, Row 2
+
+## Instructions
+
+1. Open Google Sheets
+2. Go to "Template" sheet
+3. Click on Cell C2 (Column C, Row 2)
+4. Delete all existing content
+5. Copy and paste the ENTIRE code below
+6. Save (Ctrl+S or Cmd+S)
+
+---
+
+## COMPLETE CSS CODE (Copy Everything Below)
+
+```css
+/*** CSS related to the content displayed***/
+
+.card:not(.card-padding) {
+        cursor:pointer;
+}
+.container {
+        text-align:left;
+}
+
+.description {
+        font-size: 14px;
+        line-height: 18px;
+        color: #333;
+        margin:15px 0 5px 0 !important;
+        text-align:justify;
+        max-width:500px;
+        display:none;
+}
+
+.name {
+        font-size: 15px;
+        margin: 0 0 !important;
+        text-transform: uppercase;
+        text-decoration: none;
+        font-weight: bold;
+        color: rgb(50, 122, 247);
+        padding-right: 0;
+        padding-top: 1px;
+        font-style: normal;
+        display:inline-block;
+}
+
+.img-preview{
+    display: flex;
+    justify-items: center;
+}
+.img-preview:after {
+    content: "";
+    display: block;
+    margin-bottom: 100%;
+    margin-top: 15px;
+    width: 0;
+}
+.img-preview>img{
+        height: 100%;
+}
+
+.popUp{
+        transition: padding 500ms  cubic-bezier(0, 0, 0, 1), background-color 500ms  cubic-bezier(0, 0, 0, 1);
+        padding: 10%!important;
+        z-index: 1000;
+        display: flex;
+        justify-content: center;
+        align-items: center;
+}
+
+.popUp > div{
+        transition: box-shadow 500ms cubic-bezier(0, 0, 0, 1);
+        box-shadow: rgba(0, 0, 0, 0.4) 0 12px 32px 8px;
+        background-color: white;
+        cursor:default!important;
+}
+
+.cards-container{
+        position:relative;
+}
+
+.button-container {
+        text-align:center;
+        float:right;
+        display: none;
+}
+.popUpOpen .button-container {
+        display: inline-block;
+}
+
+.openButton {
+        display:none;
+
+        width: 50px;
+        height: 20px;
+
+        padding:0.5em 0.55em 0.8em 0.35em;
+        margin-top:6px;
+        margin-left:10px;
+
+        border-radius:2px;
+
+        text-decoration:none;
+        text-align:center;
+        font-size:15px;
+        background-color:#00C853;
+}
+
+.availability {
+        display:none;
+
+        max-width:500px;
+
+        font-size: 14px;
+        font-weight:bold;
+        line-height: 18px;
+        text-align:justify;
+        color: #666;
+}
+
+[data-availability="Yes"][data-available="yes"] {
+        display:inline-block;
+}
+
+[data-availability="No"][data-available="no"] {
+        display:inline-block;
+}
+
+.popUpOpen .cross-relative {
+        position:relative;
+}
+
+.closePopUp {
+        position: absolute;
+        top: 10px;
+        right: 10px;
+        z-index: 1001;
+        width: 32px;
+        height: 32px;
+        display: none;
+        cursor: pointer;
+        font-size: 28px;
+        font-weight: 300;
+        line-height: 32px;
+        text-align: center;
+        color: #666;
+        background-color: rgba(255, 255, 255, 0.95);
+        border-radius: 50%;
+        box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+        transition: all 0.2s ease;
+}
+
+.closePopUp:hover {
+        color: #333;
+        background-color: #fff;
+        transform: scale(1.1);
+        box-shadow: 0 3px 12px rgba(0, 0, 0, 0.3);
+}
+
+.popUpOpen .closePopUp {
+        display: block;
+}
+
+.popUpOpen .description {
+        display:block;
+}
+
+.content-container{
+        position:relative;
+}
+
+.Big-Img {
+        padding-right:7px;
+        width:100%;
+        margin-bottom:15px;
+}
+
+.closePopUp img {
+        width:20px;
+}
+
+.details {
+        color: #666;
+        line-height: 16px;
+        font-size: 15px;
+        text-decoration: none;
+        letter-spacing: -0.5px;
+        font-style: normal;
+}
+
+.Price {
+        text-decoration: none;
+        font-size: 20px;
+        line-height: 20px;
+        color: #444;
+        font-weight: bold;
+        clear: left;
+        font-style: normal;
+        display:block;
+        margin:7px 0 !important;
+}
+
+.info {
+        margin:0 7px;
+}
+
+.price-block {
+        margin-top: 8px;
+}
+
+.price-main {
+        font-size: 20px;
+        font-weight: 700;
+        color: #000;
+        line-height: 1.1;
+}
+
+.price-unit {
+        font-size: 12px;
+        font-weight: 400;
+        color: #555;
+        margin-left: 6px;
+}
+
+.price-sub {
+        margin-top: 6px;
+        font-size: 12.5px;
+        color: #444;
+}
+
+.price-line {
+        font-weight: 600;
+}
+
+.price-sep {
+        margin: 0 8px;
+        color: #999;
+}
+```
+
+---
+
+## What This CSS Does
+
+### Product Cards in Grid:
+- Cursor changes to pointer on hover
+- Card styling with borders and shadows
+- Hover effects
+
+### Close Button (X):
+- **Hidden by default** on all cards (`display: none`)
+- **Only shows when popup opens** (`.popUpOpen .closePopUp`)
+- **Positioned in top-right corner** (`top: 10px; right: 10px`)
+- **Circular white button** with shadow
+- **Hover effect** - scales up slightly
+
+### Popup:
+- Smooth transition animations
+- Large shadow around popup
+- Semi-transparent overlay background
+
+### Images:
+- Responsive sizing
+- Proper aspect ratio
+
+### Product Info:
+- Product name styling (blue, bold, uppercase)
+- Price blocks with main/pack/case pricing
+- Details text styling
+- Description (shows only in popup)
+
+---
+
+## Key Features of This CSS
+
+✅ **X button hidden on cards** - Only shows in popup  
+✅ **X in top-right corner** - Better UX placement  
+✅ **Circular button design** - Modern look  
+✅ **Hover effects** - Interactive feedback  
+✅ **Smooth animations** - Professional feel  
+✅ **Responsive layout** - Works on all screen sizes
+
+---
+
+## After Pasting This CSS
+
+Your catalog will have:
+- Clean product cards (no X buttons)
+- Click product → Beautiful popup opens
+- X button appears in top-right corner
+- Click X or outside → Popup closes smoothly
+- Professional hover effects throughout
+
+Save and refresh your Awesome Table page to see the changes!

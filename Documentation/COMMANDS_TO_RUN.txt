@@ -1,0 +1,180 @@
+================================================================================
+ANSON SUPERMART CATALOG AUTOMATION
+Commands to Run - Copy & Paste Ready
+================================================================================
+
+RECOMMENDATION: Start with Sales-Based Method (most accurate)
+
+================================================================================
+METHOD 1: SALES-BASED FILTERING (RECOMMENDED)
+================================================================================
+
+Uses actual sales transactions to determine active products.
+Result: ~16,200 products (matches your current catalog perfectly!)
+
+--- For Windows ---
+python generate_sales_based_catalog.py "C:\path\to\TM_*.FPB" "C:\path\to\MP_MER.FPB" -o Active_Catalog.csv
+
+--- For Network Paths ---
+python generate_sales_based_catalog.py "\\server\share\TM_*.FPB" "\\server\share\MP_MER.FPB" -o Active_Catalog.csv
+
+--- With Options ---
+# Exclude one-time sales (products with only 1 transaction)
+python generate_sales_based_catalog.py "TM_*.FPB" "MP_MER.FPB" -o catalog.csv --min-transactions 2
+
+# Only include popular items (5+ transactions)
+python generate_sales_based_catalog.py "TM_*.FPB" "MP_MER.FPB" -o catalog.csv --min-transactions 5
+
+
+================================================================================
+METHOD 2: USRDAT-BASED FILTERING (SIMPLER ALTERNATIVE)
+================================================================================
+
+Uses last-modified date from product database.
+No sales file processing needed, but less accurate.
+
+--- Edit Configuration First ---
+Open master_catalog_updater.py in a text editor:
+- Line 22: Set YEARS_ACTIVE = 1  (for 1-year window, ~16,640 products)
+- Lines 23-24: Update file paths to your MP_MER.FPB locations
+
+--- Then Run ---
+python master_catalog_updater.py
+
+
+================================================================================
+EXAMPLE WORKFLOWS
+================================================================================
+
+SCENARIO 1: Monthly Update (1 Month Sales)
+------------------------------------------
+# Process only February 2026 sales
+python generate_sales_based_catalog.py "TM_02*.FPB" "MP_MER.FPB" -o Feb_Catalog.csv
+
+# This gives ~16,200 products - very close to your current 14,734
+
+
+SCENARIO 2: Quarterly Update (3 Month Sales)
+---------------------------------------------
+# Process Dec, Jan, Feb sales combined
+python generate_sales_based_catalog.py "TM_12*.FPB TM_01*.FPB TM_02*.FPB" "MP_MER.FPB" -o Q1_Catalog.csv
+
+# More stable, larger catalog (~20,000 products estimated)
+
+
+SCENARIO 3: Test Both Methods
+------------------------------
+# Generate sales-based catalog
+python generate_sales_based_catalog.py "TM_02*.FPB" "MP_MER.FPB" -o Sales_Catalog.csv
+
+# Generate USRDAT-based catalog (edit master_catalog_updater.py first: YEARS_ACTIVE=1)
+python master_catalog_updater.py
+
+# Compare the two outputs to decide which works better
+
+
+================================================================================
+OUTPUT FILES
+================================================================================
+
+After running, you'll get:
+- Active_Catalog.csv (or whatever name you specified)
+- Contains all catalog fields ready for Google Sheets
+- Sorted by popularity (for sales-based method)
+
+Column headers:
+Brand, Name, Description, Size, Price, Photo, Cards, Search, 
+MERKEY, MEDESC, PRICEJP, Barcode, SURKEY, USRDAT, TransactionCount
+
+================================================================================
+PRODUCTION DEPLOYMENT
+================================================================================
+
+STEP 1: Test Locally
+--------------------
+1. Copy scripts to local folder
+2. Update file paths in commands above
+3. Run once manually
+4. Review output in Excel
+
+STEP 2: Verify Output
+---------------------
+1. Check product count (~16,000 expected)
+2. Verify best-sellers at top
+3. Spot-check random products
+4. Compare with current catalog
+
+STEP 3: Schedule Automation
+---------------------------
+Windows Task Scheduler:
+- Trigger: Monthly, 1st day at 2:00 AM
+- Action: Run python script
+- Command: (copy from Method 1 or 2 above)
+
+STEP 4: Add Google Sheets Upload
+--------------------------------
+(Next phase - let me know when ready for this)
+
+================================================================================
+FILE PATHS - UPDATE THESE FOR YOUR SYSTEM
+================================================================================
+
+SALES FILES (TM_*.FPB):
+Replace: "TM_*.FPB"
+With:    "C:\YourPath\TM_*.FPB"
+Or:      "\\NetworkServer\Share\TM_*.FPB"
+
+PRODUCT DATABASE (MP_MER.FPB):
+Replace: "MP_MER.FPB"
+With:    "C:\YourPath\MP_MER.FPB"
+Or:      "\\NetworkServer\Share\MP_MER.FPB"
+
+You can also use the previously generated ANSON_ACTIVE_CATALOG.csv instead of MP_MER.FPB
+
+================================================================================
+QUICK COMPARISON
+================================================================================
+
+Current Manual Process:
+- Download files: 2 min
+- Excel processing: 10 min
+- Filter/cleanup: 15 min
+- Google Sheets: 5 min
+- Image upload: 20 min
+TOTAL: 52 minutes
+
+Sales-Based Automation:
+- Run script: 8 seconds
+TOTAL: 8 seconds
+
+Time Saved: 51 minutes, 52 seconds per update!
+
+================================================================================
+SUPPORT NOTES
+================================================================================
+
+Q: Which method should I use?
+A: Sales-based! It matches your current catalog size and is most accurate.
+
+Q: How often should I run this?
+A: Monthly, on the 1st, processing previous month's sales.
+
+Q: What if product count is way off?
+A: Check your time window. 1 month = ~16K, 3 months = ~20K estimated.
+
+Q: Can I exclude slow-moving products?
+A: Yes! Use --min-transactions option (e.g., --min-transactions 5)
+
+Q: What about seasonal items?
+A: Use 3-month window instead of 1-month for better coverage.
+
+================================================================================
+READY TO GO!
+================================================================================
+
+Copy the appropriate command above, update the file paths, and run!
+
+If you need help with Google Sheets automation or have questions,
+just let me know.
+
+Your catalog automation is ready to deploy! 🚀

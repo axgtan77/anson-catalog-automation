@@ -1,0 +1,330 @@
+# MONTHLY AUTOMATION SETUP
+# Strategy 2: Full Month + Velocity Filter
+
+## Overview
+
+This guide will help you set up automated monthly catalog generation.
+The system will run on the 1st of each month and process the previous month's sales.
+
+## Prerequisites
+
+✅ deploy_catalog.py tested and working
+✅ File paths configured correctly
+✅ Output catalog reviewed and approved
+
+---
+
+## OPTION 1: Windows Task Scheduler (Recommended for Windows)
+
+### Step 1: Create Batch File
+
+Create a file called `run_catalog.bat` with this content:
+
+```batch
+@echo off
+REM Anson Supermart Monthly Catalog Update
+REM Runs on 1st of each month
+
+echo ============================================
+echo Monthly Catalog Update - %date% %time%
+echo ============================================
+
+REM Set paths (UPDATE THESE)
+set PYTHON=C:\Python\python.exe
+set SCRIPT_DIR=C:\CatalogAutomation
+set SALES_DIR=\\server\share\Sales
+set PRODUCT_DB=\\server\share\MP_MER.FPB
+set OUTPUT_DIR=C:\Catalogs
+
+REM Get last month (you may need to update this logic)
+REM For now, manually update LAST_MONTH each month
+set LAST_MONTH=02
+
+REM Run the catalog generator
+cd /d %SCRIPT_DIR%
+%PYTHON% generate_sales_based_catalog.py ^
+    "%SALES_DIR%\TM_%LAST_MONTH%*.FPB" ^
+    "%PRODUCT_DB%" ^
+    -o "%OUTPUT_DIR%\Active_Catalog_%date:~-4,4%%date:~-7,2%%date:~-10,2%.csv" ^
+    --min-transactions 2
+
+if %ERRORLEVEL% EQU 0 (
+    echo.
+    echo SUCCESS: Catalog generated
+    echo Output: %OUTPUT_DIR%\Active_Catalog_%date:~-4,4%%date:~-7,2%%date:~-10,2%.csv
+    echo.
+) else (
+    echo.
+    echo ERROR: Catalog generation failed
+    echo Check logs and file paths
+    echo.
+    exit /b 1
+)
+
+REM Optional: Send email notification (requires additional setup)
+REM call send_notification.bat SUCCESS
+
+pause
+```
+
+### Step 2: Set Up Task Scheduler
+
+1. Open **Task Scheduler** (search in Windows)
+2. Click **"Create Task"** (not "Create Basic Task")
+3. **General Tab**:
+   - Name: `Anson Catalog Monthly Update`
+   - Description: `Generates active product catalog from sales data`
+   - Select: `Run whether user is logged on or not`
+   - Check: `Run with highest privileges`
+
+4. **Triggers Tab**:
+   - Click **New**
+   - Begin the task: `On a schedule`
+   - Settings: `Monthly`
+   - Months: `Select all`
+   - Days: `1` (first day of month)
+   - Time: `02:00:00` (2 AM)
+   - Click **OK**
+
+5. **Actions Tab**:
+   - Click **New**
+   - Action: `Start a program`
+   - Program/script: `C:\CatalogAutomation\run_catalog.bat`
+   - Click **OK**
+
+6. **Conditions Tab**:
+   - Uncheck: `Start the task only if the computer is on AC power`
+   - Check: `Wake the computer to run this task` (if desired)
+
+7. **Settings Tab**:
+   - Check: `Allow task to be run on demand`
+   - Check: `If the task fails, restart every: 10 minutes, 3 times`
+
+8. Click **OK** and enter your Windows password
+
+### Step 3: Test the Task
+
+Right-click the task → **Run**
+
+Check that:
+- Catalog is generated in output folder
+- Product count is correct (~16,500)
+- No errors in Task Scheduler logs
+
+---
+
+## OPTION 2: Python Scheduled Script
+
+If you want a pure Python solution:
+
+```python
+# scheduled_catalog.py
+import schedule
+import time
+import subprocess
+from datetime import datetime, timedelta
+
+def run_catalog_update():
+    """Run on 1st of each month"""
+    today = datetime.now()
+    
+    # Only run on 1st of month
+    if today.day != 1:
+        print(f"Not the 1st of month (today is {today.day}), skipping...")
+        return
+    
+    # Calculate last month
+    last_month = (today.replace(day=1) - timedelta(days=1)).strftime("%m")
+    
+    print(f"Running catalog update for month {last_month}...")
+    
+    cmd = [
+        'python3',
+        'generate_sales_based_catalog.py',
+        f'TM_{last_month}*.FPB',
+        'MP_MER.FPB',
+        '-o', f'Active_Catalog_{today.strftime("%Y%m%d")}.csv',
+        '--min-transactions', '2'
+    ]
+    
+    subprocess.run(cmd)
+
+# Schedule to check daily at 2 AM
+schedule.every().day.at("02:00").do(run_catalog_update)
+
+print("Catalog automation scheduler started...")
+print("Checking daily at 2:00 AM for 1st of month")
+
+while True:
+    schedule.run_pending()
+    time.sleep(3600)  # Check every hour
+```
+
+Then run as a background service.
+
+---
+
+## OPTION 3: Linux/Mac Cron Job
+
+Add to crontab (`crontab -e`):
+
+```bash
+# Run catalog update on 1st of each month at 2 AM
+0 2 1 * * cd /path/to/scripts && /usr/bin/python3 generate_sales_based_catalog.py "/path/to/TM_$(date -d 'last month' +\%m)*.FPB" /path/to/MP_MER.FPB -o /path/to/Active_Catalog_$(date +\%Y\%m\%d).csv --min-transactions 2 >> /var/log/catalog_update.log 2>&1
+```
+
+---
+
+## Monthly Update Process
+
+### What Happens Each Month
+
+**Example Timeline:**
+
+**March 1st, 2026 at 2:00 AM:**
+1. Script runs automatically
+2. Processes all February sales files (TM_02*.FPB)
+3. Filters products with 2+ transactions
+4. Generates: `Active_Catalog_20260301.csv` (~16,500 products)
+5. Saves to output folder
+
+**April 1st, 2026 at 2:00 AM:**
+1. Script runs automatically
+2. Processes all March sales files (TM_03*.FPB)
+3. Generates: `Active_Catalog_20260401.csv`
+4. Ready for Google Sheets upload
+
+### Manual Override
+
+You can always run manually when needed:
+```bash
+python3 deploy_catalog.py
+```
+
+---
+
+## File Organization
+
+### Recommended Folder Structure
+
+```
+C:\CatalogAutomation\
+├── generate_sales_based_catalog.py
+├── deploy_catalog.py
+├── run_catalog.bat
+├── config.ini
+└── logs\
+    └── catalog_updates.log
+
+C:\Catalogs\
+├── Active_Catalog_20260301.csv (Latest)
+├── Active_Catalog_20260201.csv (Previous)
+└── Archive\
+    └── (older catalogs)
+
+\\Server\Share\
+├── Sales\
+│   ├── TM_0201.FPB
+│   ├── TM_0202.FPB
+│   └── ... (daily sales files)
+└── MP_MER.FPB (Product master)
+```
+
+---
+
+## Email Notifications (Optional)
+
+To get email alerts when catalog is generated:
+
+### Windows: Using PowerShell
+
+Add to your batch file:
+
+```batch
+REM Send email notification
+powershell -Command "& { $smtp = 'smtp.yourserver.com'; $from = 'catalog@anson.com'; $to = 'you@anson.com'; $subject = 'Catalog Updated'; $body = 'Monthly catalog generated successfully'; Send-MailMessage -SmtpServer $smtp -From $from -To $to -Subject $subject -Body $body }"
+```
+
+### Python: Using SMTP
+
+```python
+import smtplib
+from email.message import EmailMessage
+
+def send_notification(status, product_count):
+    msg = EmailMessage()
+    msg['Subject'] = f'Catalog Update: {status}'
+    msg['From'] = 'catalog@anson.com'
+    msg['To'] = 'you@anson.com'
+    msg.set_content(f'Monthly catalog generated with {product_count} products')
+    
+    with smtplib.SMTP('smtp.yourserver.com') as smtp:
+        smtp.send_message(msg)
+```
+
+---
+
+## Troubleshooting
+
+### Task doesn't run
+
+1. Check Task Scheduler → History tab for errors
+2. Verify paths in batch file are correct
+3. Test batch file manually first
+4. Check Windows permissions
+
+### Wrong product count
+
+1. Verify correct month's files are being processed
+2. Check MIN_TRANSACTIONS setting (try 1, 2, or 3)
+3. Verify sales files are complete for the month
+
+### Files not found
+
+1. Check network paths are accessible
+2. Verify file naming pattern matches (TM_XX*.FPB)
+3. Check permissions on network shares
+
+---
+
+## Monitoring
+
+### What to Check Monthly
+
+After each automated run:
+
+✅ Catalog file was created
+✅ File size is reasonable (2-3 MB)
+✅ Product count is in expected range (15,000-17,000)
+✅ TransactionCount column has values
+✅ Best-sellers at top of file
+
+### Set Calendar Reminders
+
+- **1st of month (morning)**: Verify automation ran successfully
+- **2nd of month**: Upload to Google Sheets (manual for now)
+- **Weekly**: Spot-check catalog is current
+
+---
+
+## Next Phase: Google Sheets Automation
+
+Once monthly automation is working, we can add:
+1. Automatic upload to Google Sheets
+2. Email notification with summary stats
+3. Change detection (new/removed products report)
+4. Automatic image sync to AWS
+
+Let me know when you're ready for this!
+
+---
+
+## Summary
+
+✅ Script: `deploy_catalog.py` (already configured)
+✅ Automation: Windows Task Scheduler / Cron
+✅ Schedule: 1st of month at 2 AM
+✅ Processing time: 8-15 seconds
+✅ Output: ~16,500 products (min-transactions=2)
+
+**You're saving 52 minutes per month = 10+ hours per year!**

@@ -1,0 +1,30 @@
+# Data files (large / proprietary)
+Data/
+Backup/
+
+# SQLite databases
+*.db
+*.db-shm
+*.db-wal
+
+# FoxPro / DBF files
+*.FPB
+*.fpb
+*.dbf
+*.DBF
+
+# Uploaded images
+SQLite/uploads/
+
+# Sync logs and state files
+SQLite/sync_changes_*.txt
+SQLite/.last_mp_mer_sync.json
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Export outputs (generated files)
+Export/
+Output/
