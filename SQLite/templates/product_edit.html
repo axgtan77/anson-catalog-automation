@@ -11,6 +11,20 @@
   </div>
 </div>
 
+{% if product.pending_deletion %}
+<div class="card" style="border-left:4px solid #e31e24;background:#fff5f5">
+  <div class="row" style="justify-content:space-between;align-items:center">
+    <div>
+      <b style="color:#e31e24">⚠ Pending Deletion</b>
+      <div style="color:#666;font-size:13px;margin-top:4px">This product was removed from the latest MP_MER.FPB sync. Restore it if it should remain in the catalog.</div>
+    </div>
+    <form method="post" action="{{ url_for('product_restore', merkey=product.merkey) }}">
+      <button type="submit" class="btn btn-secondary">Restore Product</button>
+    </form>
+  </div>
+</div>
+{% endif %}
+
 <div class="card">
   <div class="row" style="align-items:flex-start">
     <div class="imgbox">

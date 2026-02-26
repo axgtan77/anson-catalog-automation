@@ -306,11 +306,11 @@ def sync_prices_from_mp_mer(fpb_path, dry_run=False):
                 placeholders = ','.join(['?'] * len(batch))
                 cursor.execute(f"""
                     UPDATE products
-                    SET active = 0, updated_at = CURRENT_TIMESTAMP
+                    SET active = 0, pending_deletion = 1, updated_at = CURRENT_TIMESTAMP
                     WHERE merkey IN ({placeholders})
                 """, batch)
             stats['products_deactivated'] = len(newly_inactive)
-            print(f"✓ Deactivated {stats['products_deactivated']} products")
+            print(f"✓ Deactivated {stats['products_deactivated']} products (marked for deletion)")
 
         print()
 

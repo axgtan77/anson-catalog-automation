@@ -70,6 +70,8 @@ def index():
       WHERE {where}
     """)
     s = dict(cur.fetchone())
+    cur.execute("SELECT COUNT(*) as c FROM products WHERE pending_deletion=1")
+    pending_deletion_count = cur.fetchone()["c"]
 
     cur.execute(f"""
       SELECT p.data_quality, COUNT(*) as count
@@ -88,6 +90,7 @@ def index():
         "needs_work": s["needs_work"] or 0,
         "complete": s["complete"] or 0,
         "missing_photos": s["missing_photos"] or 0,
+        "pending_deletion": pending_deletion_count,
     }, breakdown=breakdown)
 
 @app.route("/products")
@@ -104,6 +107,7 @@ def products_list():
     where=[]; params=[]
     if scope=="active": where.append("p.active=1")
     if filter_type=="needs_work": where.append("p.needs_enrichment=1")
+    elif filter_type=="pending_deletion": where.append("p.pending_deletion=1")
     elif filter_type=="all": pass
     else:
         where.append("p.data_quality=?"); params.append(filter_type)
@@ -124,6 +128,7 @@ def products_list():
 
     cur.execute(f"""
       SELECT p.merkey, p.description, p.name, p.size, p.data_quality, p.needs_enrichment,
+             p.pending_deletion, p.active,
              b.name as brand, c.name as category,
              COALESCE(s.txn_count_24m,0) as txn_count_24m,
              CASE WHEN img.id IS NULL THEN 1 ELSE 0 END as missing_photo
@@ -203,6 +208,28 @@ def product_update(merkey):
       WHERE merkey=?
     """,(description,name,brand_id,category_id,department_id,size,weight_volume,unit,dq,ne,notes or "Updated via web encoder", merkey))
     conn.commit(); conn.close()
+    return redirect(url_for("product_edit", merkey=merkey))
+
+@app.route("/products/purge-pending", methods=["POST"])
+def purge_pending_deletion():
+    conn=get_db(); cur=conn.cursor()
+    conn.execute("PRAGMA foreign_keys = ON")
+    cur.execute("SELECT COUNT(*) as c FROM products WHERE pending_deletion=1")
+    count = cur.fetchone()["c"]
+    cur.execute("DELETE FROM products WHERE pending_deletion=1")
+    conn.commit(); conn.close()
+    flash(f"Deleted {count:,} products marked for deletion.", "success")
+    return redirect(url_for("index"))
+
+@app.route("/product/<merkey>/restore", methods=["POST"])
+def product_restore(merkey):
+    conn=get_db(); cur=conn.cursor()
+    cur.execute("""
+      UPDATE products SET pending_deletion=0, active=1, updated_at=CURRENT_TIMESTAMP
+      WHERE merkey=?
+    """, (merkey,))
+    conn.commit(); conn.close()
+    flash("Product restored — pending deletion flag cleared.", "success")
     return redirect(url_for("product_edit", merkey=merkey))
 
 @app.route("/product/<merkey>/photo", methods=["POST"])

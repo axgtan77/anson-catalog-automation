@@ -19,6 +19,7 @@
 
 <div class="stats-grid">
   <div class="stat-card"><div class="stat-number">{{ "{:,}".format(stats.missing_photos) }}</div><div class="stat-label">Missing Photos ({{ stats.scope|capitalize }})</div></div>
+  <div class="stat-card" style="border-left:4px solid #e31e24"><div class="stat-number" style="color:#e31e24">{{ "{:,}".format(stats.pending_deletion) }}</div><div class="stat-label">Pending Deletion</div></div>
 </div>
 
 <div class="card">
@@ -43,6 +44,12 @@
     <a class="btn btn-primary" href="{{ url_for('products_list', scope=stats.scope, filter='needs_work') }}">Start Encoding</a>
     <a class="btn btn-secondary" href="{{ url_for('products_list', scope=stats.scope, filter='all') }}">View {{ stats.scope|capitalize }} Products</a>
     <a class="btn btn-outline" href="{{ url_for('products_list', scope=stats.scope, filter='needs_work', missing_photos=1) }}">Fix Missing Photos</a>
+    {% if stats.pending_deletion > 0 %}
+    <a class="btn" style="background:#e31e24;color:#fff" href="{{ url_for('products_list', scope='all', filter='pending_deletion') }}">Review Pending Deletion ({{ "{:,}".format(stats.pending_deletion) }})</a>
+    <form method="post" action="{{ url_for('purge_pending_deletion') }}" style="display:inline" onsubmit="return confirm('Permanently delete all {{ '{:,}'.format(stats.pending_deletion) }} pending deletion products? This cannot be undone.')">
+      <button type="submit" class="btn" style="background:#7b0000;color:#fff">Purge All Pending ({{ "{:,}".format(stats.pending_deletion) }})</button>
+    </form>
+    {% endif %}
   </div>
 </div>
 {% endblock %}

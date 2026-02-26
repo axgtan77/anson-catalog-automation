@@ -24,6 +24,7 @@
         <option value="NEEDS_NAME" {% if filter_type=='NEEDS_NAME' %}selected{% endif %}>NEEDS_NAME</option>
         <option value="NEEDS_BRAND" {% if filter_type=='NEEDS_BRAND' %}selected{% endif %}>NEEDS_BRAND</option>
         <option value="NEEDS_SIZE" {% if filter_type=='NEEDS_SIZE' %}selected{% endif %}>NEEDS_SIZE</option>
+        <option value="pending_deletion" {% if filter_type=='pending_deletion' %}selected{% endif %}>PENDING DELETION</option>
       </select>
     </div>
 
@@ -75,7 +76,10 @@
     <tbody>
       {% for p in products %}
       <tr>
-        <td style="white-space:nowrap">{{ p.merkey }}</td>
+        <td style="white-space:nowrap">
+          {{ p.merkey }}
+          {% if p.pending_deletion %}<span class="badge b-bad" style="margin-left:4px">DEL</span>{% endif %}
+        </td>
         <td>{{ p.description }}</td>
         <td>{{ p.name or "-" }}</td>
         <td>{{ p.brand or "-" }}</td>
