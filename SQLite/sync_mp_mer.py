@@ -167,6 +167,7 @@ def sync_prices_from_mp_mer(fpb_path, dry_run=False):
         'products_activated': 0,
         'products_deactivated': 0,
         'price_changes': 0,
+        'barcodes_added': 0,
         'skipped': 0,
         'errors': []
     }
@@ -236,6 +237,22 @@ def sync_prices_from_mp_mer(fpb_path, dry_run=False):
                 if not product_exists:
                     stats['skipped'] += 1
                     continue
+
+                # Sync SUSTOK/SUSTK1/SUSTK2 barcodes (primary barcode fields in MP_MER.FPB)
+                barcode_fields = [
+                    ('SUSTOK', 1),
+                    ('SUSTK1', 0),
+                    ('SUSTK2', 0),
+                ]
+                for field, is_primary in barcode_fields:
+                    bc = (row.get(field) or '').strip()
+                    if bc and bc.isdigit() and len(bc) in (8, 12, 13):
+                        cursor.execute("""
+                            INSERT OR IGNORE INTO barcodes (merkey, barcode, is_primary)
+                            VALUES (?, ?, ?)
+                        """, (merkey, bc, is_primary))
+                        if cursor.rowcount:
+                            stats['barcodes_added'] += 1
 
                 cursor.execute("""
                     SELECT price_case, price_pack, price_retail, cost
@@ -399,6 +416,7 @@ def main():
         print(f"Price changes:         {stats['price_changes']:,}")
         print(f"Products activated:    {stats['products_activated']:,}")
         print(f"Products deactivated:  {stats['products_deactivated']:,}")
+        print(f"Barcodes added:        {stats['barcodes_added']:,}")
         print(f"Skipped:               {stats['skipped']:,}")
         print("=" * 80)
 
