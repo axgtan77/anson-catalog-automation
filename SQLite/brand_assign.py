@@ -3,18 +3,23 @@
 Brand Assignment Script
 Anson Supermart Catalog Management
 
-Two modes:
-  1. auto    : Assigns brands to products whose MEDESC first word exactly
-               matches an existing brand name in the brands table.
-  2. map     : Bulk-assigns a brand to all unbranded products sharing a
-               given MEDESC prefix (for known abbreviations).
+Four modes:
+  1. auto     : Assigns brands to products whose MEDESC first word exactly
+                matches an existing brand name in the brands table.
+  2. map      : Bulk-assigns a brand to all unbranded products sharing a
+                given MEDESC prefix (for known abbreviations).
+  3. suppress : Marks products with given prefix(es) as intentionally
+                unbranded (e.g. fresh produce). Clears needs_enrichment
+                without setting a brand.
+  4. stats    : Show remaining unbranded prefixes ranked by count.
 
 Usage:
-  python brand_assign.py auto --dry-run       # Preview auto-matches
-  python brand_assign.py auto                 # Run auto-assignment
-  python brand_assign.py map KELLY "Kelly"    # Map prefix -> brand name
-  python brand_assign.py map HV "HV"          # (creates brand if needed)
-  python brand_assign.py stats                # Show remaining unbranded prefixes
+  python brand_assign.py auto --dry-run             # Preview auto-matches
+  python brand_assign.py auto                       # Run auto-assignment
+  python brand_assign.py map KELLY "Kelly"          # Map prefix -> brand name
+  python brand_assign.py map HV "HV"               # (creates brand if needed)
+  python brand_assign.py suppress PONKAN ORANGE APPLE --reason "Fresh produce"
+  python brand_assign.py stats                      # Show remaining unbranded prefixes
 """
 
 import sqlite3
@@ -63,12 +68,17 @@ def get_prefix(description):
 
 def get_or_create_brand(cur, brand_name):
     brand_name = brand_name.strip()
+    # Match by name first, then by slug (handles apostrophes/punctuation variants)
     cur.execute("SELECT id FROM brands WHERE UPPER(name)=UPPER(?)", (brand_name,))
     r = cur.fetchone()
     if r:
         return r["id"]
-    cur.execute("INSERT INTO brands(name, slug) VALUES(?,?)",
-                (brand_name, slugify(brand_name)))
+    slug = slugify(brand_name)
+    cur.execute("SELECT id FROM brands WHERE slug=?", (slug,))
+    r = cur.fetchone()
+    if r:
+        return r["id"]
+    cur.execute("INSERT INTO brands(name, slug) VALUES(?,?)", (brand_name, slug))
     return cur.lastrowid
 
 
@@ -183,6 +193,55 @@ def cmd_map(prefix, brand_name, dry_run):
 
 
 # ---------------------------------------------------------------------------
+# Mode: suppress
+# ---------------------------------------------------------------------------
+
+def cmd_suppress(prefixes, reason, dry_run):
+    """
+    Mark unbranded products matching given prefix(es) as intentionally unbranded.
+    Sets needs_enrichment=0 with a note — keeps brand_id NULL.
+    """
+    prefixes = [p.upper() for p in prefixes]
+    conn = get_db()
+    cur  = conn.cursor()
+
+    cur.execute("""
+        SELECT merkey, description
+        FROM products
+        WHERE active=1 AND brand_id IS NULL
+          AND description IS NOT NULL AND description != ''
+    """)
+    products = cur.fetchall()
+
+    matched = 0
+    for p in products:
+        if get_prefix(p["description"]) not in prefixes:
+            continue
+        if not dry_run:
+            cur.execute("""
+                UPDATE products
+                SET needs_enrichment = 0,
+                    enrichment_notes = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE merkey = ?
+            """, (reason, p["merkey"]))
+        else:
+            if matched < 10:
+                print(f"  [DRY] {p['merkey']} | {p['description'][:50]}")
+        matched += 1
+
+    if not dry_run:
+        conn.commit()
+    conn.close()
+
+    print(f"\nPrefixes suppressed : {', '.join(prefixes)}")
+    print(f"Products updated    : {matched:,}")
+    print(f"Note set            : {reason!r}")
+    if dry_run:
+        print("DRY RUN — no changes written.")
+
+
+# ---------------------------------------------------------------------------
 # Mode: stats
 # ---------------------------------------------------------------------------
 
@@ -190,9 +249,19 @@ def cmd_stats():
     conn = get_db()
     cur  = conn.cursor()
 
+    cur.execute("SELECT COUNT(*) FROM products WHERE active=1 AND brand_id IS NULL")
+    total_unbranded = cur.fetchone()[0]
+
+    cur.execute("""
+        SELECT COUNT(*) FROM products
+        WHERE active=1 AND brand_id IS NULL AND needs_enrichment = 0
+    """)
+    suppressed = cur.fetchone()[0]
+
+    # Only count products still needing work
     cur.execute("""
         SELECT description FROM products
-        WHERE active=1 AND brand_id IS NULL
+        WHERE active=1 AND brand_id IS NULL AND needs_enrichment = 1
           AND description IS NOT NULL AND description != ''
     """)
 
@@ -203,15 +272,12 @@ def cmd_stats():
         if p:
             counts[p] += 1
 
-    cur.execute("""
-        SELECT COUNT(*) FROM products
-        WHERE active=1 AND brand_id IS NULL
-    """)
-    total_unbranded = cur.fetchone()[0]
     conn.close()
 
-    print(f"Total unbranded (active): {total_unbranded:,}")
-    print(f"Unique prefixes          : {len(counts):,}")
+    print(f"Total unbranded (active) : {total_unbranded:,}")
+    print(f"  Suppressed (no brand)  : {suppressed:,}")
+    print(f"  Still need brand       : {total_unbranded - suppressed:,}")
+    print(f"  Unique prefixes        : {len(counts):,}")
     print()
     print(f"  {'PREFIX':<22} {'COUNT':>6}")
     print(f"  {'-'*22} {'-'*6}")
@@ -238,6 +304,13 @@ def main():
 
     sub.add_parser("stats")
 
+    p_suppress = sub.add_parser("suppress")
+    p_suppress.add_argument("prefixes", nargs="+",
+                            help="One or more MEDESC prefixes to suppress")
+    p_suppress.add_argument("--reason", default="No brand applicable — intentionally unbranded",
+                            help="Note to store on suppressed products")
+    p_suppress.add_argument("--dry-run", action="store_true")
+
     args = parser.parse_args()
     print(f"\nStarted: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
@@ -247,6 +320,8 @@ def main():
         cmd_map(args.prefix, args.brand_name, args.dry_run)
     elif args.cmd == "stats":
         cmd_stats()
+    elif args.cmd == "suppress":
+        cmd_suppress(args.prefixes, args.reason, args.dry_run)
     else:
         parser.print_help()
 

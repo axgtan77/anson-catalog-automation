@@ -92,8 +92,8 @@ def is_valid_barcode(barcode: str) -> bool:
     # Must be 8, 12, or 13 digits (EAN-8, UPC-A, EAN-13)
     if len(barcode) not in (8, 12, 13):
         return False
-    # Skip internal Anson POS-generated barcodes (start with 4000001)
-    if barcode.startswith("4000001"):
+    # Skip internal Anson POS-generated barcodes (all start with 4000)
+    if barcode.startswith("4000"):
         return False
     return True
 
@@ -157,7 +157,7 @@ def enrich_products(limit: int | None, dry_run: bool, target_merkey: str | None)
               AND EXISTS (
                   SELECT 1 FROM barcodes b
                   WHERE b.merkey = p.merkey
-                    AND b.barcode NOT LIKE '4000001%'
+                    AND b.barcode NOT LIKE '4000%'
                     AND length(b.barcode) IN (8, 12, 13)
                     AND b.barcode GLOB '[0-9]*'
               )
@@ -312,7 +312,8 @@ def _print_progress(i, total, stats):
     pct = i / total * 100
     print(f"  [{i:>6}/{total}  {pct:4.1f}%]  "
           f"hits={stats['hit']}  misses={stats['miss']}  "
-          f"updated={stats['updated']}  skipped={stats['skipped']}")
+          f"updated={stats['updated']}  skipped={stats['skipped']}",
+          flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -343,4 +344,13 @@ def main():
 
 
 if __name__ == "__main__":
+    import sys
+    log_path = Path(__file__).parent / "barcode_enrich_run.log"
+    no_log = "--no-log" in sys.argv
+    if no_log:
+        sys.argv.remove("--no-log")
+    if not no_log:
+        log_file = open(log_path, "w", buffering=1, encoding="utf-8")
+        sys.stdout = log_file
+        sys.stderr = log_file
     main()
