@@ -46,10 +46,20 @@ def compute_quality(description: str, name: str, brand_id: int|None, category_id
     if not issues: return "COMPLETE", 0
     return issues[0], 1
 
+PLACEHOLDER_URL = "https://s3-ap-southeast-1.amazonaws.com/ansonsupermart.com/images/ANSON-ONLINE-GROCERY-PLACEHOLDER.jpg"
+BLANK_IMAGE_URL = "https://s3-ap-southeast-1.amazonaws.com/ansonsupermart.com/images/"
+
 def get_primary_barcode(cur, merkey: str) -> str|None:
     cur.execute("SELECT barcode FROM barcodes WHERE merkey=? ORDER BY is_primary DESC, id ASC LIMIT 1", (merkey,))
     r = cur.fetchone()
     return r["barcode"] if r else None
+
+def is_real_image_url(url: str|None) -> bool:
+    if not url:
+        return False
+    if url in (PLACEHOLDER_URL, BLANK_IMAGE_URL):
+        return False
+    return len(url) > len(BLANK_IMAGE_URL)
 
 @app.route("/")
 def index():
@@ -64,9 +74,8 @@ def index():
       SELECT COUNT(*) as total_scope,
              SUM(CASE WHEN p.needs_enrichment=1 THEN 1 ELSE 0 END) as needs_work,
              SUM(CASE WHEN p.data_quality='COMPLETE' THEN 1 ELSE 0 END) as complete,
-             SUM(CASE WHEN img.id IS NULL THEN 1 ELSE 0 END) as missing_photos
+             SUM(CASE WHEN p.needs_photo=1 THEN 1 ELSE 0 END) as missing_photos
       FROM products p
-      LEFT JOIN images img ON p.merkey=img.merkey AND img.is_primary=1
       WHERE {where}
     """)
     s = dict(cur.fetchone())
@@ -111,7 +120,7 @@ def products_list():
     elif filter_type=="all": pass
     else:
         where.append("p.data_quality=?"); params.append(filter_type)
-    if missing_photos: where.append("img.id IS NULL")
+    if missing_photos: where.append("p.needs_photo=1")
     if search:
         where.append("(p.description LIKE ? OR p.merkey LIKE ? OR p.name LIKE ?)")
         params.extend([f"%{search}%", f"%{search}%", f"%{search}%"])
@@ -121,7 +130,6 @@ def products_list():
     cur.execute(f"""
       SELECT COUNT(*) as cnt
       FROM products p
-      LEFT JOIN images img ON p.merkey=img.merkey AND img.is_primary=1
       WHERE {where_sql}
     """, params)
     total = cur.fetchone()["cnt"]
@@ -131,7 +139,7 @@ def products_list():
              p.pending_deletion, p.active,
              b.name as brand, c.name as category,
              COALESCE(s.txn_count_24m,0) as txn_count_24m,
-             CASE WHEN img.id IS NULL THEN 1 ELSE 0 END as missing_photo
+             p.needs_photo as missing_photo
       FROM products p
       LEFT JOIN brands b ON p.brand_id=b.id
       LEFT JOIN categories c ON p.category_id=c.id
@@ -167,6 +175,8 @@ def product_edit(merkey):
     if not row:
         conn.close(); return "Product not found", 404
     product=dict(row)
+    if not is_real_image_url(product.get("image_url")):
+        product["image_url"] = None
 
     brands=[dict(r) for r in cur.execute("SELECT id,name FROM brands ORDER BY name")]
     categories=[dict(r) for r in cur.execute("SELECT id,name FROM categories ORDER BY name")]
@@ -259,6 +269,7 @@ def upload_photo(merkey):
       INSERT INTO images(merkey, filename, s3_url, local_path, is_primary, width, height, file_size, uploaded_at)
       VALUES(?,?,?,?,1,?,?,?,CURRENT_TIMESTAMP)
     """,(merkey, f"{identifier}.jpg", up.url, str(processed_path), result.width, result.height, result.file_size))
+    cur.execute("UPDATE products SET needs_photo=0, updated_at=CURRENT_TIMESTAMP WHERE merkey=?",(merkey,))
     conn.commit(); conn.close()
 
     flash("Photo uploaded + processed + uploaded to S3 ✅","success")
