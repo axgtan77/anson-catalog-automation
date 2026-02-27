@@ -19,6 +19,10 @@ SQLite/uploads/
 # Sync logs and state files
 SQLite/sync_changes_*.txt
 SQLite/.last_mp_mer_sync.json
+SQLite/*.log
+
+# Claude Code local settings
+.claude/
 
 # Python cache
 __pycache__/
