@@ -1,0 +1,29 @@
+
+Started: 2026-02-26 17:25:21
+
+======================================================================
+BARCODE ENRICHMENT — Open Food Facts
+======================================================================
+Products to process : 597
+Dry run             : False
+Delay between calls : 0.2s
+
+  [   100/597  16.8%]  hits=11  misses=88  updated=1  skipped=10
+  [   200/597  33.5%]  hits=21  misses=177  updated=3  skipped=18
+  [   300/597  50.3%]  hits=27  misses=271  updated=4  skipped=23
+  [   400/597  67.0%]  hits=32  misses=364  updated=4  skipped=28
+  [   500/597  83.8%]  hits=36  misses=459  updated=4  skipped=32
+  [   597/597  100.0%]  hits=44  misses=548  updated=5  skipped=39
+
+======================================================================
+ENRICHMENT SUMMARY
+======================================================================
+Processed   : 597
+  OFF hits  : 44  (7.4%)
+  OFF misses: 548
+  No barcode: 5
+  Skipped   : 39  (already filled)
+  Updated   : 5
+======================================================================
+DONE.
+======================================================================

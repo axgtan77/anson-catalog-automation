@@ -1,0 +1,19 @@
+TRETYP	Transaction Type Description
+001	CASH
+002	ROYAL CARD - Paid in Cash, but added points to their Loyalty Card
+003	ROYAL CARD REDEMPTION - paid an amount using their accumulated Loyalty Card pts
+004	GCASH - payment using eWallet Gcash
+005	Employee Purchases
+006	Gift Vouchers
+007	Bank Payments
+008	Credit Card Payments
+009	Online Orders
+010	Personal Groceries
+	
+	
+	
+RE	Retail Transaction - It shows the merchandise information of a scanned item in the checkout
+LD	Line Discount - discount of 1 line item
+SD	Senior Discount - discount given to a batch of transactions (a subtotal)
+VL	Line Void - voiding a line transaction
+VT	Transaction Void - Voids the whole transaction
