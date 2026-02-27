@@ -43,10 +43,16 @@ S3_BUCKET = "ansonsupermart.com"
 S3_PREFIX = "images/"
 S3_REGION = "ap-southeast-1"
 
-SEARCH_DELAY    = 2.5    # seconds between DDG searches (be respectful)
+SEARCH_DELAY     = 3.0   # seconds between searches (be respectful)
 DOWNLOAD_TIMEOUT = 15    # seconds
 MIN_IMAGE_BYTES  = 8_000 # skip files too small to be a real product image
 BATCH_COMMIT     = 25
+
+GOOGLE_SEARCH_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+}
 
 PLACEHOLDER_URL = "https://s3-ap-southeast-1.amazonaws.com/ansonsupermart.com/images/ANSON-ONLINE-GROCERY-PLACEHOLDER.jpg"
 BLANK_IMAGE_URL = "https://s3-ap-southeast-1.amazonaws.com/ansonsupermart.com/images/"
@@ -103,15 +109,39 @@ def clean_desc_for_search(desc: str) -> str:
 
 
 def build_search_query(barcode: str | None, brand: str | None, desc: str) -> str:
-    """Build the best DDG image search query for this product."""
+    """Build the best image search query for this product."""
     if barcode:
-        # Barcode search is very precise — usually brings up the exact product
+        # Quoted barcode = exact match, surfaces product pages and retailer listings
         return f'"{barcode}"'
     # Fall back to brand + cleaned description
     name = clean_desc_for_search(desc)
     if brand and brand.lower() not in name.lower():
         return f"{brand} {name}"
     return name
+
+
+def google_image_search(query: str, session: requests.Session, n: int = 5) -> list[str]:
+    """Return up to n full-res image URLs from Google Images (no API key needed)."""
+    url = f"https://www.google.com/search?tbm=isch&q={requests.utils.quote(query)}&num={n}"
+    try:
+        resp = session.get(url, headers=GOOGLE_SEARCH_HEADERS, timeout=15)
+    except Exception:
+        return []
+    if resp.status_code != 200:
+        return []
+    # Google embeds full-res image URLs as JSON strings in the page HTML
+    raw_urls = re.findall(r'"(https?://[^"]{20,}\.(?:jpg|jpeg|png|webp)[^"]*)"', resp.text)
+    real = []
+    seen = set()
+    for u in raw_urls:
+        if "google" in u or "gstatic" in u:
+            continue
+        if u not in seen:
+            seen.add(u)
+            real.append(u)
+        if len(real) >= n:
+            break
+    return real
 
 
 # ---------------------------------------------------------------------------
@@ -263,12 +293,6 @@ def cmd_tag_irl(dry_run: bool):
 # ---------------------------------------------------------------------------
 
 def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_bg: bool):
-    try:
-        from duckduckgo_search import DDGS
-    except ImportError:
-        print("ERROR: duckduckgo_search not installed. Run: pip install duckduckgo_search")
-        sys.exit(1)
-
     process_to_white_bg = None
     upload_file_to_s3   = None
     if not dry_run:
@@ -309,7 +333,7 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
     total = len(products)
 
     print("=" * 65)
-    print("PHOTO ENRICHMENT — DuckDuckGo Image Search")
+    print("PHOTO ENRICHMENT — Google Image Search")
     print("=" * 65)
     print(f"Products to process : {total:,}")
     print(f"Dry run             : {dry_run}")
@@ -352,21 +376,8 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
             continue
 
         # --- Search ---
-        image_url = None
-        try:
-            with DDGS() as ddgs:
-                results = list(ddgs.images(keywords=query, max_results=5))
-            for r in results:
-                url = r.get("image", "")
-                if url and not any(url.lower().endswith(ext) for ext in SKIP_EXTENSIONS):
-                    image_url = url
-                    break
-        except Exception as e:
-            print(f"  [{i:>5}] {merkey} DDG error: {e}")
-            stats["no_results"] += 1
-            stats["processed"] += 1
-            time.sleep(SEARCH_DELAY)
-            continue
+        results = google_image_search(query, http_session, n=5)
+        image_url = results[0] if results else None
 
         if not image_url:
             stats["no_results"] += 1
@@ -412,7 +423,7 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
         cur.execute("""
             UPDATE products
             SET needs_photo=0,
-                enrichment_notes='Photo auto-sourced via DDG image search',
+                enrichment_notes='Photo auto-sourced via Google image search',
                 updated_at=CURRENT_TIMESTAMP
             WHERE merkey=?
         """, (merkey,))
