@@ -43,16 +43,23 @@ S3_BUCKET = "ansonsupermart.com"
 S3_PREFIX = "images/"
 S3_REGION = "ap-southeast-1"
 
-SEARCH_DELAY     = 3.0   # seconds between searches (be respectful)
-DOWNLOAD_TIMEOUT = 15    # seconds
-MIN_IMAGE_BYTES  = 8_000 # skip files too small to be a real product image
-BATCH_COMMIT     = 25
+SEARCH_DELAY_MIN = 4.0   # minimum seconds between searches
+SEARCH_DELAY_MAX = 8.0   # maximum seconds between searches (randomised)
+BATCH_PAUSE_EVERY = 80   # pause for BATCH_PAUSE_SECS after this many products
+BATCH_PAUSE_SECS  = 300  # 5-minute cooldown every 80 products
+BACKOFF_429_SECS  = 600  # 10-minute wait on 429 before retrying
+DOWNLOAD_TIMEOUT  = 15   # seconds
+MIN_IMAGE_BYTES   = 8_000
+BATCH_COMMIT      = 5
 
-GOOGLE_SEARCH_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-}
+# Rotate user agents to reduce fingerprinting
+USER_AGENTS = [
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
+]
 
 PLACEHOLDER_URL = "https://s3-ap-southeast-1.amazonaws.com/ansonsupermart.com/images/ANSON-ONLINE-GROCERY-PLACEHOLDER.jpg"
 BLANK_IMAGE_URL = "https://s3-ap-southeast-1.amazonaws.com/ansonsupermart.com/images/"
@@ -120,16 +127,27 @@ def build_search_query(barcode: str | None, brand: str | None, desc: str) -> str
     return name
 
 
-def google_image_search(query: str, session: requests.Session, n: int = 5) -> list[str]:
-    """Return up to n full-res image URLs from Google Images (no API key needed)."""
+def google_image_search(query: str, session: requests.Session, n: int = 5) -> tuple[list[str], bool]:
+    """
+    Return (urls, rate_limited).
+    urls          : up to n full-res image URLs
+    rate_limited  : True if Google returned 429 (caller should back off)
+    """
+    import random
+    headers = {
+        "User-Agent": random.choice(USER_AGENTS),
+        "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    }
     url = f"https://www.google.com/search?tbm=isch&q={requests.utils.quote(query)}&num={n}"
     try:
-        resp = session.get(url, headers=GOOGLE_SEARCH_HEADERS, timeout=15)
+        resp = session.get(url, headers=headers, timeout=15)
     except Exception:
-        return []
+        return [], False
+    if resp.status_code == 429:
+        return [], True   # rate limited
     if resp.status_code != 200:
-        return []
-    # Google embeds full-res image URLs as JSON strings in the page HTML
+        return [], False
     raw_urls = re.findall(r'"(https?://[^"]{20,}\.(?:jpg|jpeg|png|webp)[^"]*)"', resp.text)
     real = []
     seen = set()
@@ -141,7 +159,7 @@ def google_image_search(query: str, session: requests.Session, n: int = 5) -> li
             real.append(u)
         if len(real) >= n:
             break
-    return real
+    return real, False
 
 
 # ---------------------------------------------------------------------------
@@ -348,6 +366,7 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
 
     stats = dict(processed=0, uploaded=0, no_results=0, download_failed=0, skipped=0)
     http_session = requests.Session()
+    import random
 
     for i, p in enumerate(products, 1):
         merkey = p["merkey"]
@@ -375,14 +394,24 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
             stats["processed"] += 1
             continue
 
-        # --- Search ---
-        results = google_image_search(query, http_session, n=5)
+        # --- Search (with 429 backoff) ---
+        for attempt in range(3):
+            results, rate_limited = google_image_search(query, http_session, n=5)
+            if rate_limited:
+                print(f"\n  [RATE LIMITED] Waiting {BACKOFF_429_SECS//60} min before retrying...", flush=True)
+                time.sleep(BACKOFF_429_SECS)
+                http_session = requests.Session()  # fresh session after backoff
+            else:
+                break
+
         image_url = results[0] if results else None
 
         if not image_url:
             stats["no_results"] += 1
             stats["processed"] += 1
-            time.sleep(SEARCH_DELAY)
+            print(f"  [{i:>5}/{total}] {merkey} | {desc[:35]:<35} | {query[:28]} -> no results")
+            delay = random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX)
+            time.sleep(delay)
             continue
 
         # --- Download ---
@@ -393,7 +422,9 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
         if not download_image(image_url, orig_path, http_session):
             stats["download_failed"] += 1
             stats["processed"] += 1
-            time.sleep(SEARCH_DELAY)
+            print(f"  [{i:>5}/{total}] {merkey} | {desc[:35]:<35} | {query[:28]} -> download fail")
+            delay = random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX)
+            time.sleep(delay)
             continue
 
         # --- Process + Upload ---
@@ -406,10 +437,11 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
                                    region=S3_REGION, content_type="image/jpeg",
                                    public_read=True)
         except Exception as e:
-            print(f"  [{i:>5}] {merkey} pipeline/upload error: {e}")
+            print(f"  [{i:>5}/{total}] {merkey} pipeline/upload error: {e}")
             stats["download_failed"] += 1
             stats["processed"] += 1
-            time.sleep(SEARCH_DELAY)
+            delay = random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX)
+            time.sleep(delay)
             continue
 
         # --- Update DB ---
@@ -430,13 +462,26 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
 
         stats["uploaded"] += 1
         stats["processed"] += 1
+        conn.commit()  # commit every success — no work lost on interruption
 
-        print(f"  [{i:>5}/{total}] {merkey} | {desc[:35]:<35} | query={query[:30]} -> OK")
+        print(f"  [{i:>5}/{total}] {merkey} | {desc[:35]:<35} | {query[:28]} -> OK", flush=True)
 
-        if stats["uploaded"] % BATCH_COMMIT == 0:
-            conn.commit()
+        if i % 50 == 0:
+            pct = i / total * 100
+            print(f"\n  --- Progress: {i}/{total} ({pct:.1f}%)  "
+                  f"uploaded={stats['uploaded']}  "
+                  f"no_results={stats['no_results']}  "
+                  f"dl_failed={stats['download_failed']} ---\n", flush=True)
 
-        time.sleep(SEARCH_DELAY)
+        # Periodic cooldown every BATCH_PAUSE_EVERY products
+        if i % BATCH_PAUSE_EVERY == 0:
+            print(f"\n  [COOLDOWN] Pausing {BATCH_PAUSE_SECS//60} min after {BATCH_PAUSE_EVERY} products...", flush=True)
+            time.sleep(BATCH_PAUSE_SECS)
+            http_session = requests.Session()  # fresh session after cooldown
+            print("  [COOLDOWN] Resuming.\n", flush=True)
+
+        delay = random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX)
+        time.sleep(delay)
 
     if not dry_run:
         conn.commit()
