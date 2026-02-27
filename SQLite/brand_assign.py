@@ -193,6 +193,113 @@ def cmd_map(prefix, brand_name, dry_run):
 
 
 # ---------------------------------------------------------------------------
+# Mode: startswith  (brand assignment by raw description prefix)
+# ---------------------------------------------------------------------------
+
+def cmd_startswith(desc_prefix, brand_name, dry_run):
+    """
+    Assign a brand to all unbranded products whose description
+    (after stripping leading '!') starts with desc_prefix (case-insensitive).
+    Useful for variable-suffix prefixes like 'MAG-', 'PF.', 'JOLLY', 'LM!'.
+    """
+    prefix_upper = desc_prefix.upper()
+    conn = get_db()
+    cur  = conn.cursor()
+
+    brand_id = get_or_create_brand(cur, brand_name)
+    cur.execute("SELECT name FROM brands WHERE id=?", (brand_id,))
+    actual_name = cur.fetchone()["name"]
+
+    cur.execute("""
+        SELECT merkey, description, name, size, category_id
+        FROM products
+        WHERE active=1 AND brand_id IS NULL
+          AND description IS NOT NULL AND description != ''
+    """)
+    products = cur.fetchall()
+
+    updated = 0
+    for p in products:
+        stripped = (p["description"] or "").lstrip("!").upper()
+        if not stripped.startswith(prefix_upper):
+            continue
+        dq, ne = compute_quality(p["description"], p["name"], brand_id,
+                                 p["category_id"], p["size"])
+        if not dry_run:
+            cur.execute("""
+                UPDATE products
+                SET brand_id=?, data_quality=?, needs_enrichment=?,
+                    enrichment_notes='Brand assigned via description prefix',
+                    updated_at=CURRENT_TIMESTAMP
+                WHERE merkey=?
+            """, (brand_id, dq, ne, p["merkey"]))
+        else:
+            if updated < 5:
+                print(f"  [DRY] {p['merkey']} | {p['description'][:40]}")
+        updated += 1
+
+    if not dry_run:
+        conn.commit()
+    conn.close()
+
+    print(f"\nDesc prefix '{desc_prefix}' -> brand '{actual_name}' (id={brand_id})")
+    print(f"Products updated: {updated:,}")
+    if dry_run:
+        print("DRY RUN — no changes written.")
+
+
+# ---------------------------------------------------------------------------
+# Mode: suppress-sw  (suppress by raw description prefix, handles Z*, X*, etc.)
+# ---------------------------------------------------------------------------
+
+def cmd_suppress_sw(desc_prefix, reason, dry_run):
+    """
+    Suppress unbranded products whose description (after stripping leading '!')
+    starts with desc_prefix. Handles cases like 'Z*' and 'X*' where the
+    computed prefix varies per product (Z*RTW, Z*SALE, Z*WHOLE, etc.).
+    """
+    prefix_upper = desc_prefix.upper()
+    conn = get_db()
+    cur  = conn.cursor()
+
+    cur.execute("""
+        SELECT merkey, description
+        FROM products
+        WHERE active=1 AND brand_id IS NULL
+          AND description IS NOT NULL AND description != ''
+    """)
+    products = cur.fetchall()
+
+    matched = 0
+    for p in products:
+        stripped = (p["description"] or "").lstrip("!").upper()
+        if not stripped.startswith(prefix_upper):
+            continue
+        if not dry_run:
+            cur.execute("""
+                UPDATE products
+                SET needs_enrichment = 0,
+                    enrichment_notes = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE merkey = ?
+            """, (reason, p["merkey"]))
+        else:
+            if matched < 10:
+                print(f"  [DRY] {p['merkey']} | {p['description'][:50]}")
+        matched += 1
+
+    if not dry_run:
+        conn.commit()
+    conn.close()
+
+    print(f"\nDesc prefix '{desc_prefix}' suppressed")
+    print(f"Products updated    : {matched:,}")
+    print(f"Note set            : {reason!r}")
+    if dry_run:
+        print("DRY RUN — no changes written.")
+
+
+# ---------------------------------------------------------------------------
 # Mode: suppress
 # ---------------------------------------------------------------------------
 
@@ -311,6 +418,16 @@ def main():
                             help="Note to store on suppressed products")
     p_suppress.add_argument("--dry-run", action="store_true")
 
+    p_sw = sub.add_parser("startswith")
+    p_sw.add_argument("desc_prefix", help="Raw description prefix, e.g. 'MAG-' or 'PF.' or 'JOLLY'")
+    p_sw.add_argument("brand_name",  help="Brand name to assign")
+    p_sw.add_argument("--dry-run", action="store_true")
+
+    p_ssw = sub.add_parser("suppress-sw")
+    p_ssw.add_argument("desc_prefix", help="Raw description prefix to suppress, e.g. 'Z*' or 'X*'")
+    p_ssw.add_argument("--reason", default="No brand applicable — intentionally unbranded")
+    p_ssw.add_argument("--dry-run", action="store_true")
+
     args = parser.parse_args()
     print(f"\nStarted: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
 
@@ -322,6 +439,10 @@ def main():
         cmd_stats()
     elif args.cmd == "suppress":
         cmd_suppress(args.prefixes, args.reason, args.dry_run)
+    elif args.cmd == "startswith":
+        cmd_startswith(args.desc_prefix, args.brand_name, args.dry_run)
+    elif args.cmd == "suppress-sw":
+        cmd_suppress_sw(args.desc_prefix, args.reason, args.dry_run)
     else:
         parser.print_help()
 
