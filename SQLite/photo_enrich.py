@@ -3,8 +3,13 @@
 Photo Enrichment Script
 Anson Supermart Catalog Management
 
-Automatically finds product photos via DuckDuckGo Image Search
+Automatically finds product photos via Bing Image Search API
 and uploads them through the standard white-bg -> S3 pipeline.
+
+Requires environment variable:
+  BING_API_KEY  — Azure Cognitive Services key for Bing Image Search v7
+  Get a free key (1,000 calls/month) at https://portal.azure.com
+  Paid tier: ~$3 per 1,000 calls via Azure Bing Search resource
 
 Commands:
   stats                       Show photo queue breakdown
@@ -12,7 +17,7 @@ Commands:
   mark-skip [--auto]          Permanently skip unresolvable products (tobacco, bulk/loose, fresh)
             [--merkeys A,B]   Also skip specific merkeys by comma-separated list
             [--dry-run]       Preview without writing
-  run      [--limit N]        Search Google images and upload to S3
+  run      [--limit N]        Search Bing images and upload to S3
            [--dry-run]        Preview search results without downloading/uploading
            [--merkey X]       Process a single product
            [--no-remove-bg]   Skip background removal (faster, use for testing)
@@ -29,12 +34,12 @@ Usage:
   python photo_enrich.py run --merkey 1019919
 """
 
+import os
 import sqlite3
 import re
 import argparse
 import sys
 import time
-import tempfile
 import requests
 from pathlib import Path
 from datetime import datetime
@@ -49,24 +54,15 @@ S3_BUCKET = "ansonsupermart.com"
 S3_PREFIX = "images/"
 S3_REGION = "ap-southeast-1"
 
-SEARCH_DELAY_MIN  = 4.0  # minimum seconds between searches
-SEARCH_DELAY_MAX  = 9.0  # maximum seconds between searches (randomised)
-BATCH_PAUSE_EVERY = 60   # pause for BATCH_PAUSE_SECS after this many products
-BATCH_PAUSE_SECS  = 1800 # 30-minute cooldown every 60 products
-DOWNLOAD_TIMEOUT  = 15   # seconds
+# Bing Image Search API
+BING_API_KEY    = os.environ.get("BING_API_KEY", "")
+BING_SEARCH_URL = "https://api.bing.microsoft.com/v7.0/images/search"
+
+SEARCH_DELAY_MIN  = 0.5  # seconds between API calls (Bing is not rate-sensitive)
+SEARCH_DELAY_MAX  = 1.5
+DOWNLOAD_TIMEOUT  = 15   # seconds for image downloads
 MIN_IMAGE_BYTES   = 8_000
 BATCH_COMMIT      = 5
-
-MAX_429_WAIT_SECS = 1800 # if still rate-limited after 30 min, give up and exit cleanly
-
-# Rotate user agents to reduce fingerprinting
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_2) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Safari/605.1.15",
-]
 
 PLACEHOLDER_URL = "https://s3-ap-southeast-1.amazonaws.com/ansonsupermart.com/images/ANSON-ONLINE-GROCERY-PLACEHOLDER.jpg"
 BLANK_IMAGE_URL = "https://s3-ap-southeast-1.amazonaws.com/ansonsupermart.com/images/"
@@ -87,7 +83,7 @@ SKIP_DESC_EXACT = {                                 # Generic commodity items
     "HOT WATER", "TUBE/CUBE ICE", "MIX VEGETABLE",
 }
 
-USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"  # for image downloads
 
 
 # ---------------------------------------------------------------------------
@@ -146,39 +142,37 @@ def build_search_query(barcode: str | None, brand: str | None, desc: str) -> str
     return name
 
 
-def google_image_search(query: str, session: requests.Session, n: int = 5) -> tuple[list[str], bool]:
+def bing_image_search(query: str, session: requests.Session, n: int = 5) -> tuple[list[str], bool]:
     """
-    Return (urls, rate_limited).
-    urls          : up to n full-res image URLs
-    rate_limited  : True if Google returned 429 (caller should back off)
+    Return (urls, error).
+    urls  : up to n full-res image contentUrls from Bing Image Search API
+    error : True if the request failed (key problem, network, etc.)
     """
-    import random
-    headers = {
-        "User-Agent": random.choice(USER_AGENTS),
-        "Accept-Language": "en-US,en;q=0.9",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    headers = {"Ocp-Apim-Subscription-Key": BING_API_KEY}
+    params  = {
+        "q":          query,
+        "count":      n,
+        "imageType":  "Photo",
+        "safeSearch": "Off",
     }
-    url = f"https://www.google.com/search?tbm=isch&q={requests.utils.quote(query)}&num={n}"
     try:
-        resp = session.get(url, headers=headers, timeout=15)
+        resp = session.get(BING_SEARCH_URL, headers=headers, params=params, timeout=15)
     except Exception:
-        return [], False
-    if resp.status_code == 429:
-        return [], True   # rate limited
+        return [], True
+
+    if resp.status_code == 401:
+        print("\nERROR: Bing API key rejected (401). Check your BING_API_KEY env variable.")
+        return [], True
+    if resp.status_code == 403:
+        print("\nERROR: Bing API quota exceeded (403). Upgrade your Azure tier or wait for reset.")
+        return [], True
     if resp.status_code != 200:
-        return [], False
-    raw_urls = re.findall(r'"(https?://[^"]{20,}\.(?:jpg|jpeg|png|webp)[^"]*)"', resp.text)
-    real = []
-    seen = set()
-    for u in raw_urls:
-        if "google" in u or "gstatic" in u:
-            continue
-        if u not in seen:
-            seen.add(u)
-            real.append(u)
-        if len(real) >= n:
-            break
-    return real, False
+        return [], True
+
+    data = resp.json()
+    urls = [img["contentUrl"] for img in data.get("value", [])[:n]
+            if img.get("contentUrl")]
+    return urls, False
 
 
 # ---------------------------------------------------------------------------
@@ -442,9 +436,11 @@ def cmd_mark_skip(auto: bool, merkeys_arg: list[str], dry_run: bool):
 # ---------------------------------------------------------------------------
 
 def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_bg: bool):
-    process_to_white_bg = None
-    upload_file_to_s3   = None
     if not dry_run:
+        if not BING_API_KEY:
+            print("ERROR: BING_API_KEY environment variable is not set.")
+            print("  Get a free key at https://portal.azure.com (Bing Search v7 resource)")
+            sys.exit(1)
         try:
             from image_pipeline import process_to_white_bg
             from s3_upload import upload_file_to_s3
@@ -482,12 +478,12 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
     total = len(products)
 
     print("=" * 65)
-    print("PHOTO ENRICHMENT — Google Image Search")
+    print("PHOTO ENRICHMENT — Bing Image Search API")
     print("=" * 65)
     print(f"Products to process : {total:,}")
     print(f"Dry run             : {dry_run}")
     print(f"Background removal  : {remove_bg}")
-    print(f"Search delay        : {SEARCH_DELAY_MIN}-{SEARCH_DELAY_MAX}s (randomised)")
+    print(f"Search delay        : {SEARCH_DELAY_MIN}-{SEARCH_DELAY_MAX}s")
     print()
 
     if total == 0:
@@ -495,9 +491,10 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
         conn.close()
         return
 
-    stats = dict(processed=0, uploaded=0, no_results=0, download_failed=0, skipped=0)
-    http_session = requests.Session()
     import random
+    stats = dict(processed=0, uploaded=0, no_results=0, download_failed=0, api_error=0)
+    http_session = requests.Session()
+    consecutive_api_errors = 0
 
     for i, p in enumerate(products, 1):
         merkey = p["merkey"]
@@ -514,10 +511,9 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
             ORDER BY is_primary DESC, id ASC
             LIMIT 1
         """, (merkey,))
-        bc_row = cur.fetchone()
+        bc_row  = cur.fetchone()
         barcode = bc_row["barcode"] if bc_row else None
-
-        query = build_search_query(barcode, brand, desc)
+        query   = build_search_query(barcode, brand, desc)
 
         if dry_run:
             print(f"[{i:>5}/{total}] {merkey} | {desc[:40]}")
@@ -525,27 +521,26 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
             stats["processed"] += 1
             continue
 
-        # --- Search (with single 429 backoff, then clean exit) ---
-        results, rate_limited = google_image_search(query, http_session, n=5)
-        if rate_limited:
-            print(f"\n  [RATE LIMITED] Waiting {MAX_429_WAIT_SECS//60} min before one retry...", flush=True)
-            time.sleep(MAX_429_WAIT_SECS)
-            http_session = requests.Session()
-            results, rate_limited = google_image_search(query, http_session, n=5)
-            if rate_limited:
-                print(f"  [RATE LIMITED] Still blocked after {MAX_429_WAIT_SECS//60} min. "
-                      f"Processed {stats['processed']} products, uploaded {stats['uploaded']}. "
-                      f"Exiting cleanly — rerun to continue.", flush=True)
+        # --- Search ---
+        results, error = bing_image_search(query, http_session, n=5)
+        if error:
+            consecutive_api_errors += 1
+            stats["api_error"] += 1
+            stats["processed"] += 1
+            print(f"  [{i:>5}/{total}] {merkey} | {desc[:35]:<35} | {query[:28]} -> API error")
+            if consecutive_api_errors >= 3:
+                print(f"\n  3 consecutive API errors — check key/quota. Exiting cleanly.", flush=True)
                 break
+            time.sleep(random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX))
+            continue
+        consecutive_api_errors = 0
 
         image_url = results[0] if results else None
-
         if not image_url:
             stats["no_results"] += 1
             stats["processed"] += 1
             print(f"  [{i:>5}/{total}] {merkey} | {desc[:35]:<35} | {query[:28]} -> no results")
-            delay = random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX)
-            time.sleep(delay)
+            time.sleep(random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX))
             continue
 
         # --- Download ---
@@ -557,8 +552,7 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
             stats["download_failed"] += 1
             stats["processed"] += 1
             print(f"  [{i:>5}/{total}] {merkey} | {desc[:35]:<35} | {query[:28]} -> download fail")
-            delay = random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX)
-            time.sleep(delay)
+            time.sleep(random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX))
             continue
 
         # --- Process + Upload ---
@@ -574,8 +568,7 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
             print(f"  [{i:>5}/{total}] {merkey} pipeline/upload error: {e}")
             stats["download_failed"] += 1
             stats["processed"] += 1
-            delay = random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX)
-            time.sleep(delay)
+            time.sleep(random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX))
             continue
 
         # --- Update DB ---
@@ -589,7 +582,7 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
         cur.execute("""
             UPDATE products
             SET needs_photo=0,
-                enrichment_notes='Photo auto-sourced via Google image search',
+                enrichment_notes='Photo auto-sourced via Bing image search',
                 updated_at=CURRENT_TIMESTAMP
             WHERE merkey=?
         """, (merkey,))
@@ -607,15 +600,7 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
                   f"no_results={stats['no_results']}  "
                   f"dl_failed={stats['download_failed']} ---\n", flush=True)
 
-        # Periodic cooldown every BATCH_PAUSE_EVERY products
-        if i % BATCH_PAUSE_EVERY == 0 and i < total:
-            print(f"\n  [COOLDOWN] {i} done — pausing {BATCH_PAUSE_SECS//60} min to avoid rate limits...", flush=True)
-            time.sleep(BATCH_PAUSE_SECS)
-            http_session = requests.Session()  # fresh session after cooldown
-            print("  [COOLDOWN] Resuming.\n", flush=True)
-
-        delay = random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX)
-        time.sleep(delay)
+        time.sleep(random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX))
 
     if not dry_run:
         conn.commit()
@@ -629,6 +614,8 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
     print(f"  Uploaded      : {stats['uploaded']:,}")
     print(f"  No results    : {stats['no_results']:,}")
     print(f"  Download fail : {stats['download_failed']:,}")
+    if stats.get('api_error'):
+        print(f"  API errors    : {stats['api_error']:,}")
     if dry_run:
         print("\nDRY RUN — no images downloaded or uploaded.")
     print("=" * 65)
