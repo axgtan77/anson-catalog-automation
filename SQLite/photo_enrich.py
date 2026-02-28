@@ -9,7 +9,10 @@ and uploads them through the standard white-bg -> S3 pipeline.
 Commands:
   stats                       Show photo queue breakdown
   tag-irl  [--dry-run]        Flag fashion/footwear/gift items as needing IRL photography
-  run      [--limit N]        Search DDG images and upload to S3
+  mark-skip [--auto]          Permanently skip unresolvable products (tobacco, bulk/loose, fresh)
+            [--merkeys A,B]   Also skip specific merkeys by comma-separated list
+            [--dry-run]       Preview without writing
+  run      [--limit N]        Search Google images and upload to S3
            [--dry-run]        Preview search results without downloading/uploading
            [--merkey X]       Process a single product
            [--no-remove-bg]   Skip background removal (faster, use for testing)
@@ -18,6 +21,9 @@ Usage:
   python photo_enrich.py stats
   python photo_enrich.py tag-irl --dry-run
   python photo_enrich.py tag-irl
+  python photo_enrich.py mark-skip --auto --dry-run
+  python photo_enrich.py mark-skip --auto
+  python photo_enrich.py mark-skip --merkeys 9326,9270,1363227
   python photo_enrich.py run --dry-run --limit 10
   python photo_enrich.py run --limit 500
   python photo_enrich.py run --merkey 1019919
@@ -43,14 +49,15 @@ S3_BUCKET = "ansonsupermart.com"
 S3_PREFIX = "images/"
 S3_REGION = "ap-southeast-1"
 
-SEARCH_DELAY_MIN = 4.0   # minimum seconds between searches
-SEARCH_DELAY_MAX = 8.0   # maximum seconds between searches (randomised)
-BATCH_PAUSE_EVERY = 80   # pause for BATCH_PAUSE_SECS after this many products
-BATCH_PAUSE_SECS  = 300  # 5-minute cooldown every 80 products
-BACKOFF_429_SECS  = 600  # 10-minute wait on 429 before retrying
+SEARCH_DELAY_MIN  = 4.0  # minimum seconds between searches
+SEARCH_DELAY_MAX  = 9.0  # maximum seconds between searches (randomised)
+BATCH_PAUSE_EVERY = 60   # pause for BATCH_PAUSE_SECS after this many products
+BATCH_PAUSE_SECS  = 1800 # 30-minute cooldown every 60 products
 DOWNLOAD_TIMEOUT  = 15   # seconds
 MIN_IMAGE_BYTES   = 8_000
 BATCH_COMMIT      = 5
+
+MAX_429_WAIT_SECS = 1800 # if still rate-limited after 30 min, give up and exit cleanly
 
 # Rotate user agents to reduce fingerprinting
 USER_AGENTS = [
@@ -67,6 +74,18 @@ BLANK_IMAGE_URL = "https://s3-ap-southeast-1.amazonaws.com/ansonsupermart.com/im
 # Categories that need IRL photography — web search won't find the right variant
 IRL_DEPARTMENTS = {"Fashion & Apparel"}
 IRL_CATEGORIES  = {"Gift Items", "Foot Wear", "Footwear"}
+
+# Products to permanently exclude from auto-search (mark-skip --auto)
+SKIP_DEPARTMENTS = {"Fresh"}                        # Fresh produce / meat / fish dept
+SKIP_CATEGORIES  = {"Tobacco", "Cigarettes"}        # Cigarette brands (no online images)
+SKIP_DESC_PREFIXES = (                              # Bulk/loose items — no packaged image exists
+    "RICE.", "FRUITS.", "SUGAR.", "VEGGIES.", "MEAT.",
+    "PORK.", "CHICKEN.", "FISH.", "EGG.", "SEAFOOD.",
+    "PRODUCE.", "FROZEN.",
+)
+SKIP_DESC_EXACT = {                                 # Generic commodity items
+    "HOT WATER", "TUBE/CUBE ICE", "MIX VEGETABLE",
+}
 
 USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
 
@@ -307,6 +326,118 @@ def cmd_tag_irl(dry_run: bool):
 
 
 # ---------------------------------------------------------------------------
+# Command: mark-skip
+# ---------------------------------------------------------------------------
+
+def cmd_mark_skip(auto: bool, merkeys_arg: list[str], dry_run: bool):
+    """
+    Permanently remove products from the auto-search queue by setting
+    needs_irl_photo=1.  Use for products that will never have a web-findable
+    packaged-product image (cigarettes, bulk loose items, fresh produce, etc.).
+    """
+    conn = get_db()
+    cur  = conn.cursor()
+    ensure_irl_column(cur)
+
+    target_merkeys = set()
+
+    if auto:
+        # -- Pattern 1: Tobacco/cigarette category --------------------------
+        cat_ph = ",".join(f"'{c}'" for c in SKIP_CATEGORIES)
+        cur.execute(f"""
+            SELECT p.merkey
+            FROM products p
+            LEFT JOIN categories c ON p.category_id=c.id
+            WHERE p.active=1
+              AND p.needs_photo=1
+              AND p.needs_irl_photo=0
+              AND c.name IN ({cat_ph})
+        """)
+        tobacco_rows = cur.fetchall()
+        for r in tobacco_rows:
+            target_merkeys.add(r["merkey"])
+        print(f"  Auto (tobacco/cigarette category) : {len(tobacco_rows):,}")
+
+        # -- Pattern 2: Bulk/loose description prefixes & exact matches -----
+        prefix_sql = " OR ".join(f"p.description LIKE '{pfx}%'"
+                                 for pfx in SKIP_DESC_PREFIXES)
+        exact_ph   = ",".join(f"'{e}'" for e in SKIP_DESC_EXACT)
+        cur.execute(f"""
+            SELECT p.merkey
+            FROM products p
+            WHERE p.active=1
+              AND p.needs_photo=1
+              AND p.needs_irl_photo=0
+              AND ({prefix_sql} OR p.description IN ({exact_ph}))
+        """)
+        bulk_rows = cur.fetchall()
+        for r in bulk_rows:
+            target_merkeys.add(r["merkey"])
+        print(f"  Auto (bulk/loose descriptions)    : {len(bulk_rows):,}")
+
+        # -- Pattern 3: Fresh department ------------------------------------
+        dept_ph = ",".join(f"'{d}'" for d in SKIP_DEPARTMENTS)
+        cur.execute(f"""
+            SELECT p.merkey
+            FROM products p
+            LEFT JOIN categories c ON p.category_id=c.id
+            LEFT JOIN departments d ON c.department_id=d.id
+            WHERE p.active=1
+              AND p.needs_photo=1
+              AND p.needs_irl_photo=0
+              AND d.name IN ({dept_ph})
+        """)
+        fresh_rows = cur.fetchall()
+        for r in fresh_rows:
+            target_merkeys.add(r["merkey"])
+        print(f"  Auto (Fresh department)           : {len(fresh_rows):,}")
+
+    # -- Manual merkeys from --merkeys A,B,C --------------------------------
+    if merkeys_arg:
+        for mk in merkeys_arg:
+            target_merkeys.add(int(mk.strip()))
+        print(f"  Manual (--merkeys)                : {len(merkeys_arg)}")
+
+    if not target_merkeys:
+        print("No products matched. Use --auto and/or --merkeys.")
+        conn.close()
+        return
+
+    print(f"\nTotal to mark as skip (needs_irl_photo=1): {len(target_merkeys):,}")
+
+    if dry_run:
+        cur.execute(f"""
+            SELECT p.merkey, p.description, d.name as dept, c.name as cat
+            FROM products p
+            LEFT JOIN categories c ON p.category_id=c.id
+            LEFT JOIN departments d ON c.department_id=d.id
+            WHERE p.merkey IN ({','.join('?' for _ in target_merkeys)})
+            ORDER BY d.name, p.description
+            LIMIT 25
+        """, list(target_merkeys))
+        sample = cur.fetchall()
+        print("\nSample (first 25):")
+        for r in sample:
+            print(f"  {r['merkey']:>8}  {r['description'][:40]:<40}  "
+                  f"[{r['dept'] or '?'} > {r['cat'] or '?'}]")
+        if len(target_merkeys) > 25:
+            print(f"  ... and {len(target_merkeys) - 25} more")
+        print("\nDRY RUN — no changes written.")
+        conn.close()
+        return
+
+    cur.executemany(
+        "UPDATE products SET needs_irl_photo=1, updated_at=CURRENT_TIMESTAMP WHERE merkey=?",
+        [(mk,) for mk in target_merkeys]
+    )
+    conn.commit()
+    conn.close()
+
+    print(f"Done. {len(target_merkeys):,} products moved out of the auto-search queue.")
+    print("Run 'stats' to see the updated breakdown.")
+
+
+# ---------------------------------------------------------------------------
 # Command: run
 # ---------------------------------------------------------------------------
 
@@ -356,7 +487,7 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
     print(f"Products to process : {total:,}")
     print(f"Dry run             : {dry_run}")
     print(f"Background removal  : {remove_bg}")
-    print(f"Search delay        : {SEARCH_DELAY}s")
+    print(f"Search delay        : {SEARCH_DELAY_MIN}-{SEARCH_DELAY_MAX}s (randomised)")
     print()
 
     if total == 0:
@@ -394,14 +525,17 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
             stats["processed"] += 1
             continue
 
-        # --- Search (with 429 backoff) ---
-        for attempt in range(3):
+        # --- Search (with single 429 backoff, then clean exit) ---
+        results, rate_limited = google_image_search(query, http_session, n=5)
+        if rate_limited:
+            print(f"\n  [RATE LIMITED] Waiting {MAX_429_WAIT_SECS//60} min before one retry...", flush=True)
+            time.sleep(MAX_429_WAIT_SECS)
+            http_session = requests.Session()
             results, rate_limited = google_image_search(query, http_session, n=5)
             if rate_limited:
-                print(f"\n  [RATE LIMITED] Waiting {BACKOFF_429_SECS//60} min before retrying...", flush=True)
-                time.sleep(BACKOFF_429_SECS)
-                http_session = requests.Session()  # fresh session after backoff
-            else:
+                print(f"  [RATE LIMITED] Still blocked after {MAX_429_WAIT_SECS//60} min. "
+                      f"Processed {stats['processed']} products, uploaded {stats['uploaded']}. "
+                      f"Exiting cleanly — rerun to continue.", flush=True)
                 break
 
         image_url = results[0] if results else None
@@ -474,8 +608,8 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
                   f"dl_failed={stats['download_failed']} ---\n", flush=True)
 
         # Periodic cooldown every BATCH_PAUSE_EVERY products
-        if i % BATCH_PAUSE_EVERY == 0:
-            print(f"\n  [COOLDOWN] Pausing {BATCH_PAUSE_SECS//60} min after {BATCH_PAUSE_EVERY} products...", flush=True)
+        if i % BATCH_PAUSE_EVERY == 0 and i < total:
+            print(f"\n  [COOLDOWN] {i} done — pausing {BATCH_PAUSE_SECS//60} min to avoid rate limits...", flush=True)
             time.sleep(BATCH_PAUSE_SECS)
             http_session = requests.Session()  # fresh session after cooldown
             print("  [COOLDOWN] Resuming.\n", flush=True)
@@ -514,6 +648,13 @@ def main():
     p_irl = sub.add_parser("tag-irl")
     p_irl.add_argument("--dry-run", action="store_true")
 
+    p_skip = sub.add_parser("mark-skip")
+    p_skip.add_argument("--auto",    action="store_true",
+                        help="Apply pattern-based auto-detection (tobacco, bulk, fresh)")
+    p_skip.add_argument("--merkeys", type=str, default=None,
+                        help="Comma-separated merkeys to mark (e.g. 9326,9270)")
+    p_skip.add_argument("--dry-run", action="store_true")
+
     p_run = sub.add_parser("run")
     p_run.add_argument("--limit",        type=int,  default=None)
     p_run.add_argument("--dry-run",      action="store_true")
@@ -528,6 +669,9 @@ def main():
         cmd_stats()
     elif args.cmd == "tag-irl":
         cmd_tag_irl(args.dry_run)
+    elif args.cmd == "mark-skip":
+        merkeys_list = [m for m in args.merkeys.split(",") if m.strip()] if args.merkeys else []
+        cmd_mark_skip(args.auto, merkeys_list, args.dry_run)
     elif args.cmd == "run":
         cmd_run(args.limit, args.dry_run, args.merkey,
                 remove_bg=not args.no_remove_bg)
