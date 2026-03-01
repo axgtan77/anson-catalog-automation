@@ -35,6 +35,8 @@ import argparse
 import sys
 import time
 import random
+import shutil
+import tempfile
 import requests
 from pathlib import Path
 from datetime import datetime
@@ -55,7 +57,8 @@ BATCH_PAUSE_EVERY = 60   # pause for BATCH_PAUSE_SECS after this many products
 BATCH_PAUSE_SECS  = 1800 # 30-minute cooldown every 60 products
 MAX_429_WAIT_SECS = 1800 # wait 30 min on rate-limit, retry once then exit cleanly
 DOWNLOAD_TIMEOUT  = 15   # seconds for image downloads
-MIN_IMAGE_BYTES   = 8_000
+MIN_IMAGE_BYTES   = 15_000 # skip anything under 15 KB (thumbnails)
+MIN_IMAGE_DIM     = 400    # skip anything smaller than 400px on either side
 BATCH_COMMIT      = 5
 
 # Rotate user agents to reduce fingerprinting
@@ -219,6 +222,49 @@ def download_image(url: str, dest_path: Path, session: requests.Session) -> bool
 
     except Exception:
         return False
+
+
+def find_best_image(urls: list[str], session: requests.Session) -> tuple[Path | None, int, int]:
+    """
+    Download all candidate URLs to temp files, check dimensions with PIL,
+    and return (best_path, width, height) for the largest image that meets
+    minimum quality thresholds.  Returns (None, 0, 0) if all fail.
+
+    Caller is responsible for moving/copying best_path to its final location
+    and cleaning up the temp directory.
+    """
+    from PIL import Image as PILImage
+
+    tmp_dir    = Path(tempfile.mkdtemp(prefix="photo_enrich_"))
+    candidates = []
+
+    for idx, url in enumerate(urls):
+        tmp_path = tmp_dir / f"candidate_{idx}.jpg"
+        if not download_image(url, tmp_path, session):
+            continue
+        try:
+            with PILImage.open(tmp_path) as img:
+                w, h = img.size
+            if w < MIN_IMAGE_DIM or h < MIN_IMAGE_DIM:
+                tmp_path.unlink(missing_ok=True)
+                continue
+            candidates.append((w * h, w, h, tmp_path))
+        except Exception:
+            tmp_path.unlink(missing_ok=True)
+
+    if not candidates:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        return None, 0, 0
+
+    # Pick the largest by pixel area
+    candidates.sort(key=lambda c: c[0], reverse=True)
+    _, best_w, best_h, best_path = candidates[0]
+
+    # Clean up the losers
+    for _, _, _, p in candidates[1:]:
+        p.unlink(missing_ok=True)
+
+    return best_path, best_w, best_h
 
 
 # ---------------------------------------------------------------------------
@@ -532,25 +578,27 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
                       f"Exiting cleanly — rerun to continue.", flush=True)
                 break
 
-        image_url = results[0] if results else None
-        if not image_url:
+        if not results:
             stats["no_results"] += 1
             stats["processed"] += 1
             print(f"  [{i:>5}/{total}] {merkey} | {desc[:35]:<35} | {query[:28]} -> no results")
             time.sleep(random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX))
             continue
 
-        # --- Download ---
+        # --- Download all candidates, pick the best (largest dims) ---
         identifier = barcode if barcode else merkey
         orig_path  = ORIG_DIR / f"{merkey}_auto.jpg"
         proc_path  = PROC_DIR / f"{identifier}.jpg"
 
-        if not download_image(image_url, orig_path, http_session):
+        best_path, best_w, best_h = find_best_image(results, http_session)
+        if best_path is None:
             stats["download_failed"] += 1
             stats["processed"] += 1
             print(f"  [{i:>5}/{total}] {merkey} | {desc[:35]:<35} | {query[:28]} -> download fail")
             time.sleep(random.uniform(SEARCH_DELAY_MIN, SEARCH_DELAY_MAX))
             continue
+        shutil.move(str(best_path), orig_path)
+        shutil.rmtree(best_path.parent, ignore_errors=True)
 
         # --- Process + Upload ---
         try:
@@ -588,7 +636,7 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
         stats["processed"] += 1
         conn.commit()  # commit every success — no work lost on interruption
 
-        print(f"  [{i:>5}/{total}] {merkey} | {desc[:35]:<35} | {query[:28]} -> OK", flush=True)
+        print(f"  [{i:>5}/{total}] {merkey} | {desc[:35]:<35} | {query[:28]} -> OK ({best_w}x{best_h})", flush=True)
 
         if i % 50 == 0:
             pct = i / total * 100
