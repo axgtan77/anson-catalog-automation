@@ -1,0 +1,99 @@
+{% extends "base.html" %}
+
+{% block title %}My Account | Anson Supermart{% endblock %}
+
+{% block content %}
+<nav class="breadcrumbs" aria-label="Breadcrumb">
+    {% for crumb in breadcrumbs %}
+    {% if crumb.url %}<a href="{{ crumb.url }}">{{ crumb.label }}</a>
+    {% else %}<span>{{ crumb.label }}</span>{% endif %}
+    {% endfor %}
+</nav>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+{% if messages %}
+<section class="section-block flash-stack">
+    {% for category, message in messages %}
+    <div class="flash-message flash-{{ category }}">{{ message }}</div>
+    {% endfor %}
+</section>
+{% endif %}
+{% endwith %}
+
+<section class="section-block">
+    <div class="section-heading">
+        <h1>My Account</h1>
+        <p class="lede">Manage your profile and checkout defaults.</p>
+    </div>
+
+    <div class="account-nav" style="margin-bottom:24px; display:flex; gap:16px;">
+        <a href="{{ url_for('customer_orders_page') }}" class="header-link-secondary">My Orders</a>
+        <form method="post" action="{{ url_for('customer_logout') }}" style="display:inline;">
+            <button type="submit" class="header-link-secondary" style="background:none; border:none; cursor:pointer; color:inherit; font:inherit; padding:0;">Sign out</button>
+        </form>
+    </div>
+</section>
+
+<section class="section-block">
+    <h2 class="subsection-heading">Profile Details</h2>
+    <form method="post" class="checkout-form">
+        <input type="hidden" name="action" value="update_profile">
+
+        <label for="display_name">Name <span class="required">*</span></label>
+        <input id="display_name" name="display_name" type="text" required
+               value="{{ customer.display_name }}" autocomplete="name">
+
+        <label for="phone">Phone number</label>
+        <input id="phone" name="phone" type="tel"
+               value="{{ customer.phone or '' }}" autocomplete="tel">
+
+        <label for="email">Email address</label>
+        <input id="email" name="email" type="email"
+               value="{{ customer.email or '' }}" autocomplete="email">
+
+        <p class="summary-note">Keep at least a phone number or email so you can sign in.</p>
+
+        <h3 style="margin-top:24px;">Checkout Defaults</h3>
+        <p class="summary-note">These will pre-fill your checkout form.</p>
+
+        <label for="default_fulfillment_method">Preferred fulfillment</label>
+        <select id="default_fulfillment_method" name="default_fulfillment_method">
+            <option value="">-- No preference --</option>
+            <option value="pickup" {% if customer.default_fulfillment_method == 'pickup' %}selected{% endif %}>Pickup</option>
+            <option value="delivery" {% if customer.default_fulfillment_method == 'delivery' %}selected{% endif %}>Delivery</option>
+        </select>
+
+        <label for="default_location_details">Default location / address</label>
+        <textarea id="default_location_details" name="default_location_details" rows="2">{{ customer.default_location_details or '' }}</textarea>
+
+        <label for="default_preferred_schedule">Preferred schedule</label>
+        <input id="default_preferred_schedule" name="default_preferred_schedule" type="text"
+               value="{{ customer.default_preferred_schedule or '' }}"
+               placeholder="e.g. Weekday mornings">
+
+        <button class="primary-cta" type="submit">Save profile</button>
+    </form>
+</section>
+
+<section class="section-block">
+    <h2 class="subsection-heading">Change Password</h2>
+    <form method="post" class="checkout-form">
+        <input type="hidden" name="action" value="change_password">
+
+        <label for="current_password">Current password</label>
+        <input id="current_password" name="current_password" type="password" required autocomplete="current-password">
+
+        <label for="new_password">New password</label>
+        <input id="new_password" name="new_password" type="password" required autocomplete="new-password" minlength="6">
+
+        <label for="confirm_password">Confirm new password</label>
+        <input id="confirm_password" name="confirm_password" type="password" required autocomplete="new-password">
+
+        <button class="primary-cta" type="submit">Change password</button>
+    </form>
+</section>
+
+<section class="section-block">
+    <p class="summary-note">Account created: {{ customer.created_at }}</p>
+</section>
+{% endblock %}

@@ -1,0 +1,233 @@
+{% extends "base.html" %}
+
+{% block title %}{{ order_request.request_code }} | Order Request Status{% endblock %}
+
+{% block content %}
+<nav class="breadcrumbs" aria-label="Breadcrumb">
+    {% for crumb in breadcrumbs %}
+    {% if crumb.url %}<a href="{{ crumb.url }}">{{ crumb.label }}</a>
+    {% else %}<span>{{ crumb.label }}</span>{% endif %}
+    {% endfor %}
+</nav>
+
+<div class="page-actions">
+    <a class="back-link" href="{{ url_for('home') }}" onclick="return storefrontGoBack('{{ url_for('home') }}')">← Back</a>
+</div>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+{% if messages %}
+<section class="section-block flash-stack">
+    {% for category, message in messages %}
+    <div class="flash-message flash-{{ category }}">{{ message }}</div>
+    {% endfor %}
+</section>
+{% endif %}
+{% endwith %}
+
+<section class="list-header">
+    <p class="eyebrow">Order Request Status</p>
+    <h1>{{ order_request.request_code }}</h1>
+    <p class="lede">This page shows the current internal review status of your request.</p>
+    {% if customer_can_edit %}
+    <p class="summary-note" style="margin-top:10px;">You can still edit this request while it is in the <strong>New</strong> stage.</p>
+    {% endif %}
+    {% if customer_can_cancel or customer_can_delete %}
+    <div class="admin-contact-links" style="margin-top:12px;">
+        {% if customer_can_edit %}
+        <a class="header-link-secondary" href="#edit-request">Edit request</a>
+        {% endif %}
+        {% if customer_can_cancel %}
+        <form method="post" action="{{ url_for('manage_order_request_page', request_code=order_request.request_code) }}" onsubmit="return confirm('Cancel this order request?')">
+            <input type="hidden" name="customer_action" value="cancel">
+            <button class="header-link-secondary" type="submit">Cancel request</button>
+        </form>
+        {% endif %}
+        {% if customer_can_delete %}
+        <form method="post" action="{{ url_for('manage_order_request_page', request_code=order_request.request_code) }}" onsubmit="return confirm('Delete this order request? This removes it from the system.')">
+            <input type="hidden" name="customer_action" value="delete">
+            <button class="header-link-secondary" type="submit">Delete request</button>
+        </form>
+        {% endif %}
+    </div>
+    {% endif %}
+    {% if reorder_url is defined and reorder_url %}
+    <div style="margin-top:12px;">
+        <form method="post" action="{{ reorder_url }}" style="display:inline;">
+            <button type="submit" class="secondary-cta">Reorder these items</button>
+        </form>
+    </div>
+    {% endif %}
+</section>
+
+{% if order_request.confirmed_at %}
+<section class="section-block">
+    <div class="availability-box">
+        <strong>Reviewed order confirmed</strong>
+        <span>
+            Your reviewed order was confirmed on {{ order_request.confirmed_at }}.
+            Final reviewed total: <strong>P{{ "{:,.2f}".format(order_request.confirmed_total or estimated_total) }}</strong>.
+            {% if order_request.customer_confirmation_note %}{{ order_request.customer_confirmation_note }}{% endif %}
+        </span>
+    </div>
+</section>
+{% endif %}
+
+{% if customer_status_message %}
+<section class="section-block">
+    <div class="availability-box">
+        <strong>{{ customer_status_message[0] }}</strong>
+        <span>{{ customer_status_message[1] }}</span>
+    </div>
+</section>
+{% endif %}
+
+{% if customer_can_edit %}
+<section class="section-block" id="edit-request">
+    <div class="section-heading">
+        <h2>Edit request</h2>
+        <p class="lede">Update your details or requested quantities before staff starts reviewing the order.</p>
+    </div>
+    <form method="post" action="{{ url_for('manage_order_request_page', request_code=order_request.request_code) }}" class="checkout-form">
+        <input type="hidden" name="customer_action" value="edit">
+
+        <label for="customer_name">Customer name</label>
+        <input id="customer_name" name="customer_name" type="text" value="{{ order_request.customer_name or '' }}" required>
+
+        <label for="contact_number">Contact number</label>
+        <input id="contact_number" name="contact_number" type="text" value="{{ order_request.contact_number or '' }}" required>
+
+        <label for="contact_email">Email (optional)</label>
+        <input id="contact_email" name="contact_email" type="email" value="{{ order_request.contact_email or '' }}">
+
+        <label for="fulfillment_method">Pickup or delivery</label>
+        <select id="fulfillment_method" name="fulfillment_method" required>
+            <option value="">Choose one</option>
+            <option value="pickup" {% if order_request.fulfillment_method == 'pickup' %}selected{% endif %}>Store pickup</option>
+            <option value="delivery" {% if order_request.fulfillment_method == 'delivery' %}selected{% endif %}>Delivery</option>
+        </select>
+
+        <label for="preferred_schedule">Preferred schedule</label>
+        <input id="preferred_schedule" name="preferred_schedule" type="text" value="{{ order_request.preferred_schedule or '' }}">
+
+        <label for="location_details">Pickup branch or delivery address</label>
+        <textarea id="location_details" name="location_details" rows="3" required>{{ order_request.location_details or '' }}</textarea>
+
+        <label for="fulfillment_notes">Notes for staff</label>
+        <textarea id="fulfillment_notes" name="fulfillment_notes" rows="4">{{ order_request.fulfillment_notes or '' }}</textarea>
+
+        <div class="cart-items">
+            {% for item in order_items %}
+            <article class="cart-item cart-item-admin">
+                <div class="cart-item-main">
+                    <div class="cart-item-brand">{{ item.brand or "Unbranded" }}</div>
+                    <div class="cart-item-name">{{ item.product_name }}</div>
+                    <div class="cart-item-meta">
+                        {% if item.order_unit_label %}<span>{{ item.order_unit_label }}</span>{% endif %}
+                        {% if item.pricing_basis %}<span>{{ item.pricing_basis }}</span>{% endif %}
+                    </div>
+                </div>
+                <div class="admin-item-editor">
+                    <label for="item_qty_{{ item.id }}">Qty</label>
+                    <input id="item_qty_{{ item.id }}" name="item_qty_{{ item.id }}" type="number" min="0" value="{{ item.requested_qty }}">
+
+                    <label class="checkbox-row" for="item_remove_{{ item.id }}">
+                        <input id="item_remove_{{ item.id }}" name="item_remove_{{ item.id }}" type="checkbox">
+                        <span>Remove from request</span>
+                    </label>
+                </div>
+            </article>
+            {% endfor %}
+        </div>
+
+        <button class="primary-cta" type="submit">Save request changes</button>
+    </form>
+</section>
+{% endif %}
+
+<section class="cart-layout">
+    <div class="section-block">
+        <div class="section-heading">
+            <h2>{% if order_request.confirmed_at %}Reviewed items{% else %}Requested items{% endif %}</h2>
+        </div>
+        <div class="cart-items">
+            {% for item in order_items %}
+            <article class="cart-item cart-item-simple">
+                <div class="cart-item-main">
+                    <div class="cart-item-brand">{{ item.brand or "Unbranded" }}</div>
+                    <div class="cart-item-name">{{ item.product_name }}</div>
+                    <div class="cart-item-meta">
+                        <span>Qty {{ item.requested_qty }}</span>
+                        {% if item.order_unit_label %}<span>{{ item.order_unit_label }}</span>{% endif %}
+                        {% if item.pricing_basis %}<span>{{ item.pricing_basis }}</span>{% endif %}
+                    </div>
+                    {% if item.fulfillment_note %}
+                    <div class="cart-item-note">{{ item.fulfillment_note }}</div>
+                    {% endif %}
+                </div>
+                <div class="cart-item-actions">
+                    <div class="cart-item-price">P{{ "{:,.2f}".format(item.quoted_price or 0) }}</div>
+                </div>
+            </article>
+            {% endfor %}
+        </div>
+
+        {% if removed_items %}
+        <div class="section-heading" style="margin-top:20px;">
+            <h2>Unavailable or removed items</h2>
+        </div>
+        <div class="cart-items">
+            {% for item in removed_items %}
+            <article class="cart-item cart-item-simple cart-item-removed">
+                <div class="cart-item-main">
+                    <div class="cart-item-brand">{{ item.brand or "Unbranded" }}</div>
+                    <div class="cart-item-name">{{ item.product_name }}</div>
+                    <div class="cart-item-meta">
+                        <span>Removed from this request</span>
+                    </div>
+                </div>
+                <div class="cart-item-actions">
+                    <div class="cart-item-price">P{{ "{:,.2f}".format(item.quoted_price or 0) }}</div>
+                </div>
+            </article>
+            {% endfor %}
+        </div>
+        {% endif %}
+    </div>
+
+    <div class="section-block cart-summary">
+        <div class="section-heading">
+            <h2>Request details</h2>
+        </div>
+        <div class="summary-line"><span>Status</span><strong>{{ order_request.status_label }}</strong></div>
+        <div class="summary-line"><span>Customer</span><strong>{{ order_request.customer_name }}</strong></div>
+        <div class="summary-line"><span>Contact</span><strong>{{ order_request.contact_number }}</strong></div>
+        {% if order_request.fulfillment_method %}
+        <div class="summary-line"><span>Fulfillment</span><strong>{{ order_request.fulfillment_method.replace('_', ' ').title() }}</strong></div>
+        {% endif %}
+        {% if order_request.preferred_schedule %}
+        <div class="summary-line"><span>Preferred schedule</span><strong>{{ order_request.preferred_schedule }}</strong></div>
+        {% endif %}
+        <div class="summary-line"><span>Items</span><strong>{{ order_request.item_count }}</strong></div>
+        <div class="summary-line"><span>Current estimate</span><strong>P{{ "{:,.2f}".format(estimated_total) }}</strong></div>
+        {% if order_request.confirmed_total is not none %}
+        <div class="summary-line"><span>Confirmed total</span><strong>P{{ "{:,.2f}".format(order_request.confirmed_total or 0) }}</strong></div>
+        {% endif %}
+        <div class="summary-line"><span>Submitted</span><strong>{{ order_request.created_at }}</strong></div>
+        {% if order_request.confirmed_at %}
+        <div class="summary-line"><span>Confirmed at</span><strong>{{ order_request.confirmed_at }}</strong></div>
+        {% endif %}
+        {% if order_request.location_details %}
+        <p class="summary-note"><strong>Pickup or delivery details:</strong> {{ order_request.location_details }}</p>
+        {% endif %}
+        {% if order_request.fulfillment_notes %}
+        <p class="summary-note"><strong>Your notes:</strong> {{ order_request.fulfillment_notes }}</p>
+        {% endif %}
+        {% if order_request.customer_confirmation_note %}
+        <p class="summary-note"><strong>Confirmation note:</strong> {{ order_request.customer_confirmation_note }}</p>
+        {% endif %}
+        {% if order_request.internal_note %}
+        <p class="summary-note"><strong>Staff note:</strong> {{ order_request.internal_note }}</p>
+        {% endif %}
+    </div>
+</section>
+{% endblock %}

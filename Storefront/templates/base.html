@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>{% block title %}Anson Supermart{% endblock %}</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="{{ url_for('static', filename='storefront.css') }}">
+</head>
+<body>
+
+    <header class="site-header">
+
+        <!-- Thin info ribbon -->
+        <div class="utility-bar">
+            <div class="wrap utility-bar-inner">
+                <span>Fresh goods · Daily essentials · Pharmacy · Bakery · Neighborhood service</span>
+                <span>Catalog updated from Anson's internal merchandise workflow</span>
+            </div>
+        </div>
+
+        <!-- Logo + Search -->
+        <div class="topbar">
+            <div class="wrap topbar-inner">
+                <a class="brand-lockup" href="{{ url_for('home') }}">
+                    <span class="brand-mark">
+                        <img src="{{ url_for('static', filename='anson-supermart-logo.jpg') }}" alt="Anson Supermart">
+                    </span>
+                    <span class="brand-text">
+                        <strong>Anson Supermart</strong>
+                        <small>Community grocery &amp; neighborhood service</small>
+                    </span>
+                </a>
+
+                <form class="searchbar" method="get" action="{{ url_for('search') }}">
+                    <input type="search" name="q"
+                           value="{{ request.args.get('q', '') }}"
+                           placeholder="Search products, brand, or barcode…">
+                    <button type="submit">Search</button>
+                </form>
+
+                <div class="header-actions">
+                    {% if customer_logged_in %}
+                    <a class="header-link-secondary" href="{{ url_for('customer_orders_page') }}">My orders</a>
+                    <a class="header-link-secondary" href="{{ url_for('customer_profile_page') }}">{{ customer_display_name }}</a>
+                    {% else %}
+                    <a class="header-link-secondary" href="{{ url_for('customer_login_page') }}">Sign in</a>
+                    <a class="header-link-secondary" href="{{ url_for('order_lookup_page') }}">Track request</a>
+                    {% endif %}
+                    <a class="cart-link" href="{{ url_for('cart_page') }}">
+                        <span>Order request</span>
+                        <span class="cart-count">{{ cart_count }}</span>
+                    </a>
+                </div>
+            </div>
+        </div>
+
+        <!-- Department nav — bold red -->
+        <nav class="nav-strip" aria-label="Department navigation">
+            <div class="wrap nav-links">
+                {% for department in top_departments %}
+                <a href="{{ url_for('department_page', slug=department.slug) }}">{{ department.name }}</a>
+                {% endfor %}
+            </div>
+        </nav>
+
+    </header>
+
+    <main class="wrap page-shell">
+        {% block content %}{% endblock %}
+    </main>
+
+    <footer class="site-footer">
+        <div class="wrap footer-line">
+            <div class="footer-brand">
+                <strong>Anson Supermart</strong>
+                <span>Community grocery, neighborhood service, and everyday convenience.</span>
+            </div>
+            <div class="footer-meta">
+                <span>Catalog published: {{ last_publish_at or 'unknown' }}</span><br>
+                <span>Storefront Concept C</span>
+            </div>
+        </div>
+    </footer>
+
+    <script>
+    (() => {
+        window.storefrontGoBack = (fallbackUrl) => {
+            try {
+                const referrer = document.referrer;
+                if (referrer) {
+                    const refUrl = new URL(referrer, window.location.origin);
+                    if (refUrl.origin === window.location.origin && refUrl.pathname !== window.location.pathname) {
+                        window.location.href = refUrl.href;
+                        return false;
+                    }
+                }
+            } catch (error) {
+                // Fall back to the provided URL below.
+            }
+            window.location.href = fallbackUrl;
+            return false;
+        };
+
+        const updateCartCount = (count) => {
+            document.querySelectorAll('.cart-count').forEach((node) => {
+                node.textContent = count;
+            });
+        };
+
+        document.addEventListener('click', (event) => {
+            const button = event.target.closest('.stepper-btn');
+            if (!button) return;
+            const stepper = button.closest('.quantity-stepper');
+            if (!stepper) return;
+            const input = stepper.querySelector('.stepper-input');
+            if (!input) return;
+            const current = Math.max(parseInt(input.value || '1', 10) || 1, 1);
+            const step = parseInt(button.dataset.step || '0', 10) || 0;
+            input.value = Math.max(1, current + step);
+            input.dispatchEvent(new Event('change', { bubbles: true }));
+        });
+
+        document.addEventListener('submit', async (event) => {
+            const form = event.target.closest('.js-ajax-cart-form');
+            if (!form) return;
+            event.preventDefault();
+
+            const submitButton = form.querySelector('button[type="submit"]');
+            const originalLabel = submitButton ? submitButton.textContent : '';
+            if (submitButton) {
+                submitButton.disabled = true;
+                submitButton.textContent = 'Adding...';
+            }
+
+            try {
+                const response = await fetch(form.action, {
+                    method: 'POST',
+                    headers: {
+                        'X-Requested-With': 'XMLHttpRequest',
+                        'Accept': 'application/json',
+                    },
+                    body: new FormData(form),
+                });
+                const payload = await response.json();
+                if (!response.ok || !payload.ok) {
+                    throw new Error(payload.error || 'Unable to add item to basket.');
+                }
+                updateCartCount(payload.cart_count || 0);
+                const input = form.querySelector('input[name="quantity"]');
+                if (input) {
+                    input.value = '1';
+                }
+                if (submitButton) {
+                    submitButton.textContent = 'Added';
+                    window.setTimeout(() => {
+                        submitButton.textContent = originalLabel;
+                        submitButton.disabled = false;
+                    }, 900);
+                }
+            } catch (error) {
+                if (submitButton) {
+                    submitButton.textContent = originalLabel;
+                    submitButton.disabled = false;
+                }
+                window.alert(error.message || 'Unable to add item to basket.');
+            }
+        });
+    })();
+    </script>
+
+</body>
+</html>

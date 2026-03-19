@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+
+{% block title %}Create Account | Anson Supermart{% endblock %}
+
+{% block content %}
+<nav class="breadcrumbs" aria-label="Breadcrumb">
+    {% for crumb in breadcrumbs %}
+    {% if crumb.url %}<a href="{{ crumb.url }}">{{ crumb.label }}</a>
+    {% else %}<span>{{ crumb.label }}</span>{% endif %}
+    {% endfor %}
+</nav>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+{% if messages %}
+<section class="section-block flash-stack">
+    {% for category, message in messages %}
+    <div class="flash-message flash-{{ category }}">{{ message }}</div>
+    {% endfor %}
+</section>
+{% endif %}
+{% endwith %}
+
+<section class="section-block auth-card">
+    <div class="section-heading">
+        <p class="eyebrow">Customer Account</p>
+        <h1>Create an account</h1>
+        <p class="lede">Save your details, track orders, and reorder easily.</p>
+    </div>
+
+    <form method="post" class="checkout-form auth-form">
+        <label for="display_name">Your name <span class="required">*</span></label>
+        <input id="display_name" name="display_name" type="text" required
+               value="{{ form_display_name }}" autocomplete="name">
+
+        <label for="phone">Phone number</label>
+        <input id="phone" name="phone" type="tel"
+               value="{{ form_phone }}" autocomplete="tel"
+               placeholder="e.g. 09171234567">
+
+        <label for="email">Email address</label>
+        <input id="email" name="email" type="email"
+               value="{{ form_email }}" autocomplete="email"
+               placeholder="e.g. you@example.com">
+
+        <p class="summary-note">Provide at least a phone number or email. This is how you'll sign in.</p>
+
+        <label for="password">Password <span class="required">*</span></label>
+        <input id="password" name="password" type="password" autocomplete="new-password" required
+               minlength="6" placeholder="At least 6 characters">
+
+        <label for="password_confirm">Confirm password <span class="required">*</span></label>
+        <input id="password_confirm" name="password_confirm" type="password" autocomplete="new-password" required>
+
+        <button class="primary-cta" type="submit">Create account</button>
+    </form>
+
+    <p class="summary-note">
+        Already have an account?
+        <a href="{{ url_for('customer_login_page') }}">Sign in here</a>
+    </p>
+</section>
+{% endblock %}

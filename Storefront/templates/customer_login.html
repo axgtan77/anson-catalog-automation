@@ -1,0 +1,48 @@
+{% extends "base.html" %}
+
+{% block title %}Sign In | Anson Supermart{% endblock %}
+
+{% block content %}
+<nav class="breadcrumbs" aria-label="Breadcrumb">
+    {% for crumb in breadcrumbs %}
+    {% if crumb.url %}<a href="{{ crumb.url }}">{{ crumb.label }}</a>
+    {% else %}<span>{{ crumb.label }}</span>{% endif %}
+    {% endfor %}
+</nav>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+{% if messages %}
+<section class="section-block flash-stack">
+    {% for category, message in messages %}
+    <div class="flash-message flash-{{ category }}">{{ message }}</div>
+    {% endfor %}
+</section>
+{% endif %}
+{% endwith %}
+
+<section class="section-block auth-card">
+    <div class="section-heading">
+        <p class="eyebrow">Customer Account</p>
+        <h1>Sign in</h1>
+        <p class="lede">Enter your phone number or email address and password.</p>
+    </div>
+
+    <form method="post" class="checkout-form auth-form">
+        <input type="hidden" name="next" value="{{ next_target }}">
+
+        <label for="identifier">Phone number or email</label>
+        <input id="identifier" name="identifier" type="text" autocomplete="username" required
+               placeholder="e.g. 09171234567 or you@example.com">
+
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+
+        <button class="primary-cta" type="submit">Sign in</button>
+    </form>
+
+    <p class="summary-note">
+        Don't have an account yet?
+        <a href="{{ url_for('customer_register_page') }}">Create one here</a>
+    </p>
+</section>
+{% endblock %}

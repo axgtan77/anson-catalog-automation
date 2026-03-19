@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+
+{% block title %}Order Request Cart | Anson Supermart{% endblock %}
+
+{% block content %}
+
+<nav class="breadcrumbs" aria-label="Breadcrumb">
+    {% for crumb in breadcrumbs %}
+    {% if crumb.url %}<a href="{{ crumb.url }}">{{ crumb.label }}</a>
+    {% else %}<span>{{ crumb.label }}</span>{% endif %}
+    {% endfor %}
+</nav>
+
+<div class="page-actions">
+    <a class="back-link" href="{{ url_for('home') }}" onclick="return storefrontGoBack('{{ url_for('home') }}')">← Back</a>
+</div>
+
+<section class="list-header">
+    <p class="eyebrow">Order Request</p>
+    <h1>Order request cart</h1>
+    <p class="lede">Build a simple order request for internal review. Variable-weight fresh items will still be confirmed by staff during fulfillment.</p>
+</section>
+
+{% with messages = get_flashed_messages(with_categories=true) %}
+{% if messages %}
+<section class="section-block flash-stack">
+    {% for category, message in messages %}
+    <div class="flash-message flash-{{ category }}">{{ message }}</div>
+    {% endfor %}
+</section>
+{% endif %}
+{% endwith %}
+
+{% if request_submitted %}
+<section class="section-block">
+    <div class="availability-box">
+        <strong>Order request submitted</strong>
+        <span>Your request code is <strong>{{ request_code }}</strong>. Staff can now review the requested items and confirm fulfillment details. <a href="{{ request_status_url }}">View request status</a>.</span>
+    </div>
+    {% if not customer_logged_in %}
+    <div class="availability-box" style="margin-top: 12px;">
+        <strong>Save your details for next time?</strong>
+        <span>
+            <a href="{{ url_for('customer_register_page') }}">Create an account</a>
+            to track orders, reorder easily, and pre-fill your checkout details.
+        </span>
+    </div>
+    {% endif %}
+</section>
+{% endif %}
+
+<section class="cart-layout">
+    <div class="section-block">
+        <div class="section-heading">
+            <h2>Requested items</h2>
+        </div>
+
+        {% if cart_items %}
+        <form method="post" action="{{ url_for('update_cart') }}">
+            <div class="cart-items">
+                {% for item in cart_items %}
+                <article class="cart-item">
+                    <img src="{{ item.product.photo_url }}" alt="{{ item.product.name }}" loading="lazy">
+                    <div class="cart-item-main">
+                        <div class="cart-item-brand">{{ item.product.brand or "Unbranded" }}</div>
+                        <a class="cart-item-name" href="{{ url_for('product_page', merkey=item.product.merkey) }}">{{ item.product.name }}</a>
+                        <div class="cart-item-meta">
+                            <span>{{ item.product.availability.label }}</span>
+                            {% if item.product.fulfillment.order_unit_label %}<span>{{ item.product.fulfillment.order_unit_label }}</span>{% endif %}
+                            {% if item.product.price_subtext %}<span>{{ item.product.price_subtext }}</span>{% endif %}
+                        </div>
+                        <div class="cart-item-note">{{ item.product.fulfillment.note }}</div>
+                    </div>
+                    <div class="cart-item-actions">
+                        <label for="qty_{{ item.product.merkey }}">Qty</label>
+                        <input id="qty_{{ item.product.merkey }}" name="qty_{{ item.product.merkey }}" type="number" min="0" value="{{ item.requested_qty }}">
+                        <div class="cart-item-price">P{{ "{:,.2f}".format(item.line_price) }}</div>
+                        <button class="filter-button" type="submit">Update</button>
+                    </div>
+                </article>
+                {% endfor %}
+            </div>
+        </form>
+        {% else %}
+        <p class="empty-state">Your order request cart is empty. You can now add orderable items directly from the product cards or product detail pages.</p>
+        {% endif %}
+    </div>
+
+    <div class="section-block cart-summary">
+        <div class="section-heading">
+            <h2>Submit request</h2>
+        </div>
+
+        <div class="summary-line"><span>Items</span><strong>{{ cart_items|length }}</strong></div>
+        <div class="summary-line"><span>Estimated total</span><strong>P{{ "{:,.2f}".format(estimated_total) }}</strong></div>
+        <p class="summary-note">This is an order request, not a final paid checkout. Staff still review variable-weight items, substitutions, and final totals.</p>
+
+        <form method="post" action="{{ url_for('cart_page') }}" class="checkout-form">
+            <label for="customer_name">Customer name</label>
+            <input id="customer_name" name="customer_name" type="text" value="{{ form_data.customer_name or '' }}" required>
+
+            <label for="contact_number">Contact number</label>
+            <input id="contact_number" name="contact_number" type="text" value="{{ form_data.contact_number or '' }}" required>
+
+            <label for="contact_email">Email (optional)</label>
+            <input id="contact_email" name="contact_email" type="email" value="{{ form_data.contact_email or '' }}">
+
+            <label for="fulfillment_method">Pickup or delivery</label>
+            <select id="fulfillment_method" name="fulfillment_method" required>
+                <option value="">Choose one</option>
+                <option value="pickup" {% if form_data.fulfillment_method == 'pickup' %}selected{% endif %}>Store pickup</option>
+                <option value="delivery" {% if form_data.fulfillment_method == 'delivery' %}selected{% endif %}>Delivery</option>
+            </select>
+
+            <label for="preferred_schedule">Preferred schedule</label>
+            <input id="preferred_schedule" name="preferred_schedule" type="text" value="{{ form_data.preferred_schedule or '' }}" placeholder="Example: Today after 5 PM or Tomorrow morning">
+
+            <label for="location_details">Pickup branch or delivery address</label>
+            <textarea id="location_details" name="location_details" rows="3" placeholder="Branch for pickup, or full delivery address..." required>{{ form_data.location_details or '' }}</textarea>
+
+            <label for="fulfillment_notes">Notes for staff</label>
+            <textarea id="fulfillment_notes" name="fulfillment_notes" rows="5" placeholder="Preferred replacements, timing, special instructions...">{{ form_data.fulfillment_notes or '' }}</textarea>
+
+            <button class="primary-cta" type="submit" {% if not cart_items %}disabled{% endif %}>Submit order request</button>
+        </form>
+    </div>
+</section>
+
+{% endblock %}
