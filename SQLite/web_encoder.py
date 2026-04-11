@@ -344,16 +344,23 @@ def run_storefront_publish() -> tuple[bool, str]:
 
 
 def log_audit(cur: sqlite3.Cursor, action_type: str, merkey: str | None = None, field_name: str | None = None,
-              old_value: object | None = None, new_value: object | None = None, details: str | None = None):
+              old_value: object | None = None, new_value: object | None = None, details: str | None = None,
+              user_id: int | None = None, username: str | None = None):
     user = current_user()
+    resolved_user_id = user_id
+    resolved_username = username
+    if resolved_user_id is None and user:
+        resolved_user_id = user["id"]
+    if resolved_username is None and user:
+        resolved_username = user["username"]
     cur.execute(
         """
         INSERT INTO audit_log(user_id, username, merkey, action_type, field_name, old_value, new_value, details)
         VALUES(?,?,?,?,?,?,?,?)
         """,
         (
-            user["id"] if user else None,
-            user["username"] if user else None,
+            resolved_user_id,
+            resolved_username,
             merkey,
             action_type,
             field_name,
@@ -566,7 +573,7 @@ def login():
             session.clear()
             session["user_id"] = row["id"]
             cur.execute("UPDATE users SET last_login_at=CURRENT_TIMESTAMP WHERE id=?", (row["id"],))
-            log_audit(cur, "login", details="User login")
+            log_audit(cur, "login", details="User login", user_id=row["id"], username=row["username"])
             conn.commit()
             conn.close()
             target = next_url or url_for("index")
