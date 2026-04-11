@@ -1,0 +1,128 @@
+{% extends "base.html" %}
+{% block title %}Sync Logs{% endblock %}
+{% block content %}
+<style>
+  .run-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;margin:14px 0 18px}
+  .run-card{border:1px solid #eee;border-radius:12px;padding:14px;background:#fff}
+  .run-card .label{font-size:12px;color:#666;text-transform:uppercase;letter-spacing:.04em}
+  .run-card .value{font-size:22px;font-weight:700;margin-top:4px}
+  .run-card .meta{font-size:12px;color:#666;margin-top:6px}
+  .status-success{color:#0a7d32}
+  .status-error{color:#b42318}
+  .logs-layout{display:grid;grid-template-columns:320px 1fr;gap:18px}
+  .logs-list{display:grid;gap:10px;max-height:75vh;overflow:auto}
+  .log-link{display:block;text-decoration:none;color:inherit;border:1px solid #eee;border-radius:10px;padding:12px;background:#fff}
+  .log-link.active{border-color:#e31e24;background:#fff5f5}
+  .log-link .meta{color:#666;font-size:12px;margin-top:4px}
+  .log-content{background:#161616;color:#f3f3f3;border-radius:10px;padding:14px;overflow:auto;white-space:pre-wrap;word-break:break-word;max-height:72vh}
+  .mini-table th,.mini-table td{font-size:12px;padding:8px}
+  @media(max-width:900px){.logs-layout{grid-template-columns:1fr}}
+</style>
+
+<h2>Sync Logs</h2>
+
+{% set latest_run = sync_runs[0] if sync_runs else None %}
+{% set mp_mer_runs = sync_runs | selectattr('sync_type', 'equalto', 'MP_MER_SYNC') | list %}
+{% set latest_mp_mer = mp_mer_runs[0] if mp_mer_runs else None %}
+
+<div class="card">
+  <h3>MP_MER Sync Status</h3>
+  <div class="run-grid">
+    <div class="run-card">
+      <div class="label">Latest MP_MER run</div>
+      <div class="value {% if latest_mp_mer and latest_mp_mer.status == 'SUCCESS' %}status-success{% elif latest_mp_mer %}status-error{% endif %}">
+        {{ latest_mp_mer.status if latest_mp_mer else 'No runs yet' }}
+      </div>
+      <div class="meta">
+        {% if latest_mp_mer %}
+          {{ latest_mp_mer.started_at|pht }} to {{ latest_mp_mer.completed_at|pht }}
+        {% else %}
+          No MP_MER sync rows found in sync_log.
+        {% endif %}
+      </div>
+    </div>
+    <div class="run-card">
+      <div class="label">Source file</div>
+      <div class="value" style="font-size:18px">{{ latest_mp_mer.source_file if latest_mp_mer else '-' }}</div>
+      <div class="meta">Sync type: {{ latest_mp_mer.sync_type if latest_mp_mer else '-' }}</div>
+    </div>
+    <div class="run-card">
+      <div class="label">Records processed</div>
+      <div class="value">{{ "{:,}".format(latest_mp_mer.records_processed or 0) if latest_mp_mer else '0' }}</div>
+      <div class="meta">Updated: {{ "{:,}".format(latest_mp_mer.records_updated or 0) if latest_mp_mer else '0' }} | Added: {{ "{:,}".format(latest_mp_mer.records_added or 0) if latest_mp_mer else '0' }}</div>
+    </div>
+    <div class="run-card">
+      <div class="label">Most recent sync run</div>
+      <div class="value {% if latest_run and latest_run.status == 'SUCCESS' %}status-success{% elif latest_run %}status-error{% endif %}">
+        {{ latest_run.sync_type if latest_run else 'No runs yet' }}
+      </div>
+      <div class="meta">{{ latest_run.started_at|pht if latest_run else '-' }}</div>
+    </div>
+  </div>
+</div>
+
+<div class="logs-layout">
+  <div class="card">
+    <h3>Change Log Files</h3>
+    <div class="logs-list" style="margin-top:12px">
+      {% for file in files %}
+      <a class="log-link {% if selected_name == file.name %}active{% endif %}" href="{{ url_for('sync_logs', file=file.name) }}">
+        <div><strong>{{ file.name }}</strong></div>
+        <div class="meta">{{ file.updated_at.strftime('%Y-%m-%d %I:%M %p') }} | {{ "{:,}".format(file.size_bytes) }} bytes</div>
+      </a>
+      {% else %}
+      <div style="color:#666">No sync change files found.</div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Log Reader</h3>
+    {% if selected_log %}
+      <div style="margin:10px 0 14px 0;color:#666">
+        <div><b>File:</b> {{ selected_log.name }}</div>
+        <div><b>Updated:</b> {{ selected_log.updated_at.strftime('%Y-%m-%d %I:%M %p') }}</div>
+        <div><b>Path:</b> {{ selected_log.path }}</div>
+      </div>
+      <div class="log-content">{{ selected_log.content }}</div>
+    {% else %}
+      <div style="color:#666">Select a sync log file to read it here.</div>
+    {% endif %}
+  </div>
+</div>
+
+<div class="card">
+  <h3>Recent Sync Runs (Database)</h3>
+  <div style="color:#666;margin-top:8px">These rows come from <code>sync_log</code> and are the authoritative record for MP_MER sync activity, even when a text log file is missing.</div>
+  <table class="mini-table" style="margin-top:12px">
+    <thead>
+      <tr>
+        <th>Type</th>
+        <th>Status</th>
+        <th>Source</th>
+        <th>Started</th>
+        <th>Completed</th>
+        <th>Processed</th>
+        <th>Updated</th>
+        <th>Added</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for run in sync_runs %}
+      <tr>
+        <td>{{ run.sync_type }}</td>
+        <td>{{ run.status }}</td>
+        <td>{{ run.source_file or "-" }}</td>
+        <td>{{ run.started_at|pht }}</td>
+        <td>{{ run.completed_at|pht }}</td>
+        <td>{{ run.records_processed or 0 }}</td>
+        <td>{{ run.records_updated or 0 }}</td>
+        <td>{{ run.records_added or 0 }}</td>
+      </tr>
+      {% else %}
+      <tr><td colspan="8" style="color:#666">No sync run records found.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
