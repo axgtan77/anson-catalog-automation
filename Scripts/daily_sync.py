@@ -19,6 +19,8 @@ from pathlib import Path
 
 
 SCRIPT_DIR = Path(__file__).resolve().parent
+VENV_PYTHON = (SCRIPT_DIR.parent / "venv" / "bin" / "python").resolve()
+RUNTIME_PYTHON = str(VENV_PYTHON) if VENV_PYTHON.exists() else sys.executable
 
 # Configuration
 CONFIG = {
@@ -164,7 +166,7 @@ def copy_source_file(source_path, local_dir):
 
 def run_sync(mp_mer_path, db_path, mp_sup_path="", mp_cls_path=""):
     cmd = [
-        sys.executable,
+        RUNTIME_PYTHON,
         str(SCRIPT_DIR / "sync_mp_mer.py"),
         mp_mer_path,
         "--db",
@@ -179,7 +181,7 @@ def run_sync(mp_mer_path, db_path, mp_sup_path="", mp_cls_path=""):
 
 def run_price_export(mp_mer_path, output_csv, image_base_url, sqlite_enrichment_db):
     cmd = [
-        sys.executable,
+        RUNTIME_PYTHON,
         str(SCRIPT_DIR / "update_prices_for_awesome_table.py"),
         "--mp-mer",
         mp_mer_path,
@@ -196,7 +198,7 @@ def run_price_export(mp_mer_path, output_csv, image_base_url, sqlite_enrichment_
 
 def run_brand_prefix_rules(db_path, rules_csv):
     cmd = [
-        sys.executable,
+        RUNTIME_PYTHON,
         str(SCRIPT_DIR / "apply_brand_prefix_rules.py"),
         "--db",
         db_path,
@@ -220,7 +222,7 @@ def run_sheets_upload(csv_path, sheets_cfg):
         return False
 
     cmd = [
-        sys.executable,
+        RUNTIME_PYTHON,
         str(SCRIPT_DIR / "upload_to_google_sheets.py"),
         "--csv",
         csv_path,
