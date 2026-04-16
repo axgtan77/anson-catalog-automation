@@ -122,9 +122,40 @@ MARKUP_CEILING_PCT = 500.0
 PRICE_CHANGE_ABS_MIN = 10.0
 
 
+def _clean_mode_label(value):
+    return clean_text(value).upper()
+
+
+def has_distinct_pack_signal(pack_price, retail_unit, alt_unit):
+    retail_unit = _clean_mode_label(retail_unit)
+    alt_unit = _clean_mode_label(alt_unit)
+    if pack_price <= 0:
+        return False
+    if not retail_unit or not alt_unit:
+        return False
+    if retail_unit == alt_unit:
+        return False
+    ambiguous_units = {"KG", "PC", "PACK", "MTR"}
+    if retail_unit in ambiguous_units and alt_unit in ambiguous_units:
+        return False
+    return True
+
+
+def has_distinct_case_signal(case_price, case_unit, retail_unit):
+    case_unit = _clean_mode_label(case_unit)
+    retail_unit = _clean_mode_label(retail_unit)
+    if case_price <= 0:
+        return False
+    if not case_unit or not retail_unit:
+        return False
+    if case_unit == retail_unit:
+        return False
+    return True
+
+
 def check_price_sanity(
     merkey, medesc, old_price, new_price, unit_cost,
-    case_price, pack_price,
+    case_price, pack_price, case_unit='', retail_unit='', alt_unit='',
 ):
     """
     Return two warning lists:
@@ -140,6 +171,9 @@ def check_price_sanity(
     abs_diff = abs(diff)
     pct_change = (diff / old_price) * 100.0
 
+    distinct_case = has_distinct_case_signal(case_price, case_unit, retail_unit)
+    distinct_pack = has_distinct_pack_signal(pack_price, retail_unit, alt_unit)
+
     # 1. Extreme percentage swing
     if abs(pct_change) > PRICE_CHANGE_PCT_THRESHOLD and abs_diff > PRICE_CHANGE_ABS_MIN:
         hard_warnings.append(
@@ -147,14 +181,14 @@ def check_price_sanity(
             f"(₱{old_price:.2f} → ₱{new_price:.2f})"
         )
 
-    # 2. Mode-equality signals
-    if case_price > 0 and abs(new_price - case_price) < 0.02 and abs(new_price - old_price) > 1.0:
+    # 2. Mode-equality signals, but only when the mode looks distinct enough to matter
+    if distinct_case and abs(new_price - case_price) < 0.02 and abs(new_price - old_price) > 1.0:
         hard_warnings.append(
-            f"New retail ₱{new_price:.2f} matches case price ₱{case_price:.2f} — possible mode mixup"
+            f"New retail ₱{new_price:.2f} matches case price ₱{case_price:.2f} ({case_unit} vs {retail_unit}) — possible mode mixup"
         )
-    if pack_price > 0 and abs(new_price - pack_price) < 0.02 and abs(new_price - old_price) > 1.0:
+    if distinct_pack and abs(new_price - pack_price) < 0.02 and abs(new_price - old_price) > 1.0:
         soft_warnings.append(
-            f"New retail ₱{new_price:.2f} matches pack price ₱{pack_price:.2f} — review mode semantics"
+            f"New retail ₱{new_price:.2f} matches alt-mode price ₱{pack_price:.2f} ({alt_unit} vs {retail_unit}) — review mode semantics"
         )
 
     # 3. Markup over unit cost exceeds ceiling
@@ -174,17 +208,22 @@ def check_price_sanity(
     return hard_warnings, soft_warnings
 
 
-def check_new_product_sanity(merkey, medesc, price, unit_cost, case_price, pack_price):
+def check_new_product_sanity(
+    merkey, medesc, price, unit_cost, case_price, pack_price,
+    case_unit='', retail_unit='', alt_unit='',
+):
     """
     Return a list of warning strings for a brand-new product's initial price.
     Empty list = price looks fine.
     """
     warnings = []
 
-    # Piece price equals case price — likely entered in wrong mode
-    if case_price > 0 and abs(price - case_price) < 0.02 and pack_price > 0 and price > pack_price * 1.5:
+    distinct_case = has_distinct_case_signal(case_price, case_unit, retail_unit)
+
+    # Piece price equals a meaningful case price — likely entered in wrong mode
+    if distinct_case and abs(price - case_price) < 0.02 and pack_price > 0 and price > pack_price * 1.5:
         warnings.append(
-            f"Retail ₱{price:.2f} matches case price ₱{case_price:.2f} — possible mode mixup"
+            f"Retail ₱{price:.2f} matches case price ₱{case_price:.2f} ({case_unit} vs {retail_unit}) — possible mode mixup"
         )
 
     # Extreme markup on a new product
@@ -637,7 +676,10 @@ def sync_mp_mer(db_path='anson_products.db', mp_mer_path=None, mp_sup_path=None,
             price_raw = record.get('MERETP', '').strip()       # Mode 3 (Retail/Piece)
             price = parse_float(price_raw)
             case_price = parse_float(record.get('MEWHOP', ''))  # Mode 1 (Case/Wholesale)
-            pack_price = parse_float(record.get('MERET2', ''))  # Mode 2 (Pack)
+            pack_price = parse_float(record.get('MERET2', ''))  # Mode 2 (alternate selling mode)
+            case_unit = clean_text(record.get('MEPCK1', ''))
+            retail_unit = clean_text(record.get('MEPCK3', ''))
+            alt_unit = clean_text(record.get('MEPCK2', ''))
 
             if price <= 0:
                 continue  # Skip products with no price
@@ -655,6 +697,7 @@ def sync_mp_mer(db_path='anson_products.db', mp_mer_path=None, mp_sup_path=None,
 
                 new_warnings = check_new_product_sanity(
                     merkey, medesc, price, unit_cost, case_price, pack_price,
+                    case_unit, retail_unit, alt_unit,
                 )
 
                 new_entry = {
@@ -811,7 +854,7 @@ def sync_mp_mer(db_path='anson_products.db', mp_mer_path=None, mp_sup_path=None,
                         # --- Sanity check ---
                         hard_warnings, soft_warnings = check_price_sanity(
                             merkey, medesc, old_price, price, unit_cost,
-                            case_price, pack_price,
+                            case_price, pack_price, case_unit, retail_unit, alt_unit,
                         )
 
                         if hard_warnings or soft_warnings:
