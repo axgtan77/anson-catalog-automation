@@ -610,6 +610,7 @@ def sync_mp_mer(db_path='anson_products.db', mp_mer_path=None, mp_sup_path=None,
         'new_products': [],
         'price_changes': [],
         'price_anomalies': [],   # suspicious changes quarantined for review
+        'identity_conflicts': [],
         'medesc_changes': [],
         'barcode_changes': [],
         'status_changes': [],
@@ -851,53 +852,85 @@ def sync_mp_mer(db_path='anson_products.db', mp_mer_path=None, mp_sup_path=None,
                             'markup_pct': markup_pct,
                         }
 
-                        # --- Sanity check ---
-                        hard_warnings, soft_warnings = check_price_sanity(
-                            merkey, medesc, old_price, price, unit_cost,
-                            case_price, pack_price, case_unit, retail_unit, alt_unit,
+                        old_description = clean_text(existing_products[merkey].get('description') or '')
+                        old_source_description = clean_text(existing_products[merkey].get('source_medesc') or '')
+                        identity_conflict = (
+                            old_description
+                            and medesc != old_description
+                            and medesc[:12] != old_description[:12]
+                            and old_description[:12] != old_source_description[:12]
                         )
 
-                        if hard_warnings or soft_warnings:
-                            change_entry['warnings'] = [*hard_warnings, *soft_warnings]
-                        if soft_warnings:
-                            changes['price_anomalies'].append({
+                        if identity_conflict:
+                            warning = (
+                                f"Identity conflict: source MEDESC '{medesc}' no longer matches existing product "
+                                f"('{old_description}'). Encoder must manually review and update storefront mapping."
+                            )
+                            cursor.execute("""
+                                UPDATE products SET
+                                    needs_enrichment = 1,
+                                    data_quality = 'NEEDS_REVIEW',
+                                    enrichment_notes = 'IDENTITY CONFLICT: source MERKEY appears reassigned; encoder must manually review storefront mapping',
+                                    updated_at = CURRENT_TIMESTAMP
+                                WHERE merkey = ?
+                            """, (merkey,))
+                            changes['identity_conflicts'].append({
                                 **change_entry,
-                                'warnings': soft_warnings,
-                                'source': 'price_change_soft_review',
-                                'quarantined': False,
-                            })
-
-                        if hard_warnings:
-                            # Quarantine: do NOT apply this price change
-                            changes['price_anomalies'].append({
-                                **change_entry,
-                                'warnings': hard_warnings,
-                                'source': 'price_change',
+                                'old_description': old_description,
+                                'old_source_medesc': old_source_description,
+                                'warnings': [warning],
+                                'source': 'identity_conflict',
                                 'quarantined': True,
                             })
                             changes['prices_quarantined'] += 1
                         else:
-                            # Safe — apply normally
-                            changes['price_changes'].append(change_entry)
+                            # --- Sanity check ---
+                            hard_warnings, soft_warnings = check_price_sanity(
+                                merkey, medesc, old_price, price, unit_cost,
+                                case_price, pack_price, case_unit, retail_unit, alt_unit,
+                            )
 
-                            # Mark old price as not current
-                            cursor.execute("""
-                                UPDATE prices SET is_current = 0
-                                WHERE merkey = ? AND is_current = 1
-                            """, (merkey,))
+                            if hard_warnings or soft_warnings:
+                                change_entry['warnings'] = [*hard_warnings, *soft_warnings]
+                            if soft_warnings:
+                                changes['price_anomalies'].append({
+                                    **change_entry,
+                                    'warnings': soft_warnings,
+                                    'source': 'price_change_soft_review',
+                                    'quarantined': False,
+                                })
 
-                            # Insert new price (all modes + cost)
-                            cursor.execute("""
-                                INSERT INTO prices (
-                                    merkey, price_retail, price_pack, price_case, cost,
-                                    effective_date, is_current
-                                ) VALUES (?, ?, ?, ?, ?, date('now'), 1)
-                            """, (merkey, price,
-                                  pack_price if pack_price > 0 else None,
-                                  case_price if case_price > 0 else None,
-                                  unit_cost if unit_cost > 0 else None))
+                            if hard_warnings:
+                                # Quarantine: do NOT apply this price change
+                                changes['price_anomalies'].append({
+                                    **change_entry,
+                                    'warnings': hard_warnings,
+                                    'source': 'price_change',
+                                    'quarantined': True,
+                                })
+                                changes['prices_quarantined'] += 1
+                            else:
+                                # Safe — apply normally
+                                changes['price_changes'].append(change_entry)
 
-                            changes['prices_updated'] += 1
+                                # Mark old price as not current
+                                cursor.execute("""
+                                    UPDATE prices SET is_current = 0
+                                    WHERE merkey = ? AND is_current = 1
+                                """, (merkey,))
+
+                                # Insert new price (all modes + cost)
+                                cursor.execute("""
+                                    INSERT INTO prices (
+                                        merkey, price_retail, price_pack, price_case, cost,
+                                        effective_date, is_current
+                                    ) VALUES (?, ?, ?, ?, ?, date('now'), 1)
+                                """, (merkey, price,
+                                      pack_price if pack_price > 0 else None,
+                                      case_price if case_price > 0 else None,
+                                      unit_cost if unit_cost > 0 else None))
+
+                                changes['prices_updated'] += 1
                 else:
                     # No price record yet - add one
                     unit_cost, _ = extract_unit_cost(record)
@@ -1032,7 +1065,27 @@ def sync_mp_mer(db_path='anson_products.db', mp_mer_path=None, mp_sup_path=None,
             print("✓ No price changes")
             print()
 
-        # Price anomalies (quarantined)
+        if changes['identity_conflicts']:
+            print(f"🆔 IDENTITY CONFLICTS (QUARANTINED - MANUAL STOREFRONT REVIEW): {len(changes['identity_conflicts']):,}")
+            print()
+            for conflict in changes['identity_conflicts'][:20]:
+                old_p = conflict.get('old_price', 0)
+                new_p = conflict.get('new_price', 0)
+                pct = ((new_p - old_p) / old_p) * 100.0 if old_p else 0.0
+                print(f"  [ID] {conflict['merkey']:10s} {conflict['medesc'][:45]:45s}")
+                print(f"       ₱{old_p:.2f} → ₱{new_p:.2f} ({pct:+.1f}%)")
+                print(f"       existing: {conflict.get('old_description', '')[:60]}")
+                for w in conflict.get('warnings', []):
+                    print(f"       ⚠ {w}")
+                print()
+            if len(changes['identity_conflicts']) > 20:
+                print(f"  ... and {len(changes['identity_conflicts']) - 20} more")
+            print()
+        else:
+            print("✓ No identity conflicts")
+            print()
+
+        # Price anomalies (quarantined / review)
         if changes['price_anomalies']:
             print(f"🚨 PRICE ANOMALIES (QUARANTINED - NOT APPLIED): {len(changes['price_anomalies']):,}")
             print()
@@ -1149,6 +1202,20 @@ def sync_mp_mer(db_path='anson_products.db', mp_mer_path=None, mp_sup_path=None,
                 else:
                     line += "\tUnit Cost n/a\tCurrent Markup n/a"
                 f.write(line + "\n")
+            f.write("\n")
+
+            f.write("IDENTITY CONFLICTS (QUARANTINED - MANUAL STOREFRONT REVIEW)\n")
+            f.write("-" * 80 + "\n")
+            for conflict in changes['identity_conflicts']:
+                old_p = conflict.get('old_price', 0)
+                new_p = conflict.get('new_price', 0)
+                pct = ((new_p - old_p) / old_p) * 100.0 if old_p else 0.0
+                line = f"{conflict['merkey']}\t{conflict['medesc']}\t₱{old_p:.2f} → ₱{new_p:.2f}\t{pct:+.1f}%"
+                if conflict.get('old_description'):
+                    line += f"\tExisting {conflict['old_description']}"
+                f.write(line + "\n")
+                for w in conflict.get('warnings', []):
+                    f.write(f"  WARNING: {w}\n")
             f.write("\n")
 
             f.write("PRICE ANOMALIES (QUARANTINED - NOT APPLIED)\n")
