@@ -854,23 +854,33 @@ def sync_mp_mer(db_path='anson_products.db', mp_mer_path=None, mp_sup_path=None,
 
                         old_description = clean_text(existing_products[merkey].get('description') or '')
                         old_source_description = clean_text(existing_products[merkey].get('source_medesc') or '')
-                        identity_conflict = (
-                            old_description
-                            and medesc != old_description
-                            and medesc[:12] != old_description[:12]
-                            and old_description[:12] != old_source_description[:12]
+                        old_supplier = (existing_products[merkey].get('supplier_code') or '').strip()
+                        old_clrkey = (existing_products[merkey].get('clrkey') or '').strip()
+
+                        source_identity_shift = (
+                            old_source_description
+                            and medesc != old_source_description
+                            and medesc[:12] != old_source_description[:12]
                         )
+                        supplier_shift = bool(old_supplier and supplier_code and supplier_code != old_supplier)
+                        class_shift = bool(old_clrkey and class_bits['clrkey'] and class_bits['clrkey'] != old_clrkey)
+                        identity_conflict = source_identity_shift and (supplier_shift or class_shift)
 
                         if identity_conflict:
+                            shift_reasons = []
+                            if supplier_shift:
+                                shift_reasons.append(f"supplier {old_supplier} → {supplier_code}")
+                            if class_shift:
+                                shift_reasons.append(f"class {old_clrkey} → {class_bits['clrkey']}")
                             warning = (
-                                f"Identity conflict: source MEDESC '{medesc}' no longer matches existing product "
-                                f"('{old_description}'). Encoder must manually review and update storefront mapping."
+                                f"Identity conflict: source MEDESC '{old_source_description}' → '{medesc}' with "
+                                f"{' and '.join(shift_reasons)}. Encoder must manually review storefront mapping."
                             )
                             cursor.execute("""
                                 UPDATE products SET
                                     needs_enrichment = 1,
                                     data_quality = 'NEEDS_REVIEW',
-                                    enrichment_notes = 'IDENTITY CONFLICT: source MERKEY appears reassigned; encoder must manually review storefront mapping',
+                                    enrichment_notes = 'IDENTITY CONFLICT: source identity shifted across MERKEY; encoder must manually review storefront mapping',
                                     updated_at = CURRENT_TIMESTAMP
                                 WHERE merkey = ?
                             """, (merkey,))
