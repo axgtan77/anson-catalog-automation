@@ -17,20 +17,18 @@ storefront_publish_status="PENDING"
 overall_status="RUNNING"
 error_summary=""
 
-write_status() {
-  python3 - "$STATUS_FILE" <<'PY'
+emit_status() {
+  # Writes logs/last_run_status.json in one shot. The previous version
+  # piped one python invocation into another, but the downstream python
+  # was invoked as `python3 -` with a heredoc — that heredoc fed the
+  # script, and json.load(sys.stdin) then got an empty stream and threw
+  # JSONDecodeError ("Expecting value: line 1 column 1 (char 0)"). Net
+  # effect: status file was never written, and check_catalog_sync.sh
+  # fell back to log-grep heuristics.
+  local finished_at="${1:-}"
+  python3 - "$STATUS_FILE" <<PY
 import json, sys
 from pathlib import Path
-path = Path(sys.argv[1])
-payload = json.load(sys.stdin)
-path.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
-PY
-}
-
-emit_status() {
-  local finished_at="${1:-}"
-  python3 - <<PY | write_status
-import json
 payload = {
   "started_at": ${RUN_STARTED_AT@Q},
   "finished_at": ${finished_at@Q},
@@ -42,7 +40,7 @@ payload = {
   "overall_status": ${overall_status@Q},
   "error_summary": ${error_summary@Q},
 }
-print(json.dumps(payload))
+Path(sys.argv[1]).write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
 PY
 }
 
