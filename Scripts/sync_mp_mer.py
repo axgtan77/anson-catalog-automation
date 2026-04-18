@@ -126,29 +126,61 @@ def _clean_mode_label(value):
     return clean_text(value).upper()
 
 
-def has_distinct_pack_signal(pack_price, retail_unit, alt_unit):
-    retail_unit = _clean_mode_label(retail_unit)
-    alt_unit = _clean_mode_label(alt_unit)
+AMBIGUOUS_UNITS = {"KG", "PC", "PCS", "PACK", "PK", "PIECE", "EACH", "MTR", "UNIT"}
+
+
+def _was_already_aligned(old_price, other_price):
+    """True if retail was already tracking the other-mode price before this change.
+
+    When a product has naturally had retail == pack (or retail == case) for a
+    while, a synchronized supplier price bump is NOT a mode mixup — it's just
+    both modes moving together. A paste error would come from a much more
+    distant old retail. Treat differences <= max(₱1.00, 10%) as pre-aligned.
+    """
+    if old_price <= 0 or other_price <= 0:
+        return False
+    return abs(old_price - other_price) <= max(1.0, 0.10 * other_price)
+
+
+def has_distinct_pack_signal(pack_price, old_price, retail_unit, alt_unit, case_qty=0):
     if pack_price <= 0:
         return False
+    if _was_already_aligned(old_price, pack_price):
+        return False
+    # If the case is known to contain a single retail unit, the product is
+    # effectively one-mode and pack legitimately tracks retail.
+    if case_qty and case_qty == 1:
+        return False
+    retail_unit = _clean_mode_label(retail_unit)
+    alt_unit = _clean_mode_label(alt_unit)
     if not retail_unit or not alt_unit:
         return False
     if retail_unit == alt_unit:
         return False
-    ambiguous_units = {"KG", "PC", "PACK", "MTR"}
-    if retail_unit in ambiguous_units and alt_unit in ambiguous_units:
+    if retail_unit in AMBIGUOUS_UNITS and alt_unit in AMBIGUOUS_UNITS:
         return False
     return True
 
 
-def has_distinct_case_signal(case_price, case_unit, retail_unit):
-    case_unit = _clean_mode_label(case_unit)
-    retail_unit = _clean_mode_label(retail_unit)
+def has_distinct_case_signal(case_price, case_qty, old_price, case_unit, retail_unit):
     if case_price <= 0:
         return False
+    if _was_already_aligned(old_price, case_price):
+        return False
+    # Primary signal: MEQTY1 is authoritative when present. qty>1 means the
+    # case truly contains multiple retail units (mixup possible); qty==1 means
+    # the case IS one retail unit (prices legitimately equal, never a mixup).
+    if case_qty:
+        return case_qty > 1
+    # Fallback when MEQTY1 is missing: label distinctness, filtered for
+    # ambiguous generic units.
+    case_unit = _clean_mode_label(case_unit)
+    retail_unit = _clean_mode_label(retail_unit)
     if not case_unit or not retail_unit:
         return False
     if case_unit == retail_unit:
+        return False
+    if case_unit in AMBIGUOUS_UNITS and retail_unit in AMBIGUOUS_UNITS:
         return False
     return True
 
@@ -156,6 +188,7 @@ def has_distinct_case_signal(case_price, case_unit, retail_unit):
 def check_price_sanity(
     merkey, medesc, old_price, new_price, unit_cost,
     case_price, pack_price, case_unit='', retail_unit='', alt_unit='',
+    case_qty=0,
 ):
     """
     Return two warning lists:
@@ -171,8 +204,8 @@ def check_price_sanity(
     abs_diff = abs(diff)
     pct_change = (diff / old_price) * 100.0
 
-    distinct_case = has_distinct_case_signal(case_price, case_unit, retail_unit)
-    distinct_pack = has_distinct_pack_signal(pack_price, retail_unit, alt_unit)
+    distinct_case = has_distinct_case_signal(case_price, case_qty, old_price, case_unit, retail_unit)
+    distinct_pack = has_distinct_pack_signal(pack_price, old_price, retail_unit, alt_unit, case_qty)
 
     # 1. Extreme percentage swing
     if abs(pct_change) > PRICE_CHANGE_PCT_THRESHOLD and abs_diff > PRICE_CHANGE_ABS_MIN:
@@ -210,7 +243,7 @@ def check_price_sanity(
 
 def check_new_product_sanity(
     merkey, medesc, price, unit_cost, case_price, pack_price,
-    case_unit='', retail_unit='', alt_unit='',
+    case_unit='', retail_unit='', alt_unit='', case_qty=0,
 ):
     """
     Return a list of warning strings for a brand-new product's initial price.
@@ -218,7 +251,9 @@ def check_new_product_sanity(
     """
     warnings = []
 
-    distinct_case = has_distinct_case_signal(case_price, case_unit, retail_unit)
+    # No prior price to transition from, so pass old_price=0.0 to skip the
+    # alignment exclusion — the 1.5x-pack check below guards false positives.
+    distinct_case = has_distinct_case_signal(case_price, case_qty, 0.0, case_unit, retail_unit)
 
     # Piece price equals a meaningful case price — likely entered in wrong mode
     if distinct_case and abs(price - case_price) < 0.02 and pack_price > 0 and price > pack_price * 1.5:
@@ -681,6 +716,7 @@ def sync_mp_mer(db_path='anson_products.db', mp_mer_path=None, mp_sup_path=None,
             case_unit = clean_text(record.get('MEPCK1', ''))
             retail_unit = clean_text(record.get('MEPCK3', ''))
             alt_unit = clean_text(record.get('MEPCK2', ''))
+            case_qty = parse_float(record.get('MEQTY1', ''))    # retail units per case
 
             if price <= 0:
                 continue  # Skip products with no price
@@ -698,7 +734,7 @@ def sync_mp_mer(db_path='anson_products.db', mp_mer_path=None, mp_sup_path=None,
 
                 new_warnings = check_new_product_sanity(
                     merkey, medesc, price, unit_cost, case_price, pack_price,
-                    case_unit, retail_unit, alt_unit,
+                    case_unit, retail_unit, alt_unit, case_qty,
                 )
 
                 new_entry = {
@@ -898,6 +934,7 @@ def sync_mp_mer(db_path='anson_products.db', mp_mer_path=None, mp_sup_path=None,
                             hard_warnings, soft_warnings = check_price_sanity(
                                 merkey, medesc, old_price, price, unit_cost,
                                 case_price, pack_price, case_unit, retail_unit, alt_unit,
+                                case_qty,
                             )
 
                             if hard_warnings or soft_warnings:
@@ -1097,7 +1134,10 @@ def sync_mp_mer(db_path='anson_products.db', mp_mer_path=None, mp_sup_path=None,
 
         # Price anomalies (quarantined / review)
         if changes['price_anomalies']:
-            print(f"🚨 PRICE ANOMALIES (QUARANTINED - NOT APPLIED): {len(changes['price_anomalies']):,}")
+            n_hard = sum(1 for a in changes['price_anomalies'] if a.get('quarantined'))
+            n_soft = len(changes['price_anomalies']) - n_hard
+            print(f"🚨 PRICE ANOMALIES: {len(changes['price_anomalies']):,} "
+                  f"(quarantined: {n_hard}, soft review: {n_soft})")
             print()
             for anomaly in changes['price_anomalies'][:30]:
                 src = anomaly.get('source', 'unknown')
@@ -1228,12 +1268,9 @@ def sync_mp_mer(db_path='anson_products.db', mp_mer_path=None, mp_sup_path=None,
                     f.write(f"  WARNING: {w}\n")
             f.write("\n")
 
-            f.write("PRICE ANOMALIES (QUARANTINED - NOT APPLIED)\n")
-            f.write("-" * 80 + "\n")
-            for anomaly in changes['price_anomalies']:
+            def _format_anomaly_line(anomaly):
                 old_p = anomaly.get('old_price', 0)
                 new_p = anomaly.get('new_price', 0)
-                src = anomaly.get('source', 'unknown')
                 if old_p > 0:
                     pct = ((new_p - old_p) / old_p) * 100.0
                     price_str = f"₱{old_p:.2f} → ₱{new_p:.2f}\t{pct:+.1f}%"
@@ -1246,9 +1283,25 @@ def sync_mp_mer(db_path='anson_products.db', mp_mer_path=None, mp_sup_path=None,
                     line += f"\tPack ₱{anomaly['pack_price']:.2f}"
                 if anomaly.get('unit_cost', 0) > 0:
                     line += f"\tUnit Cost ₱{anomaly['unit_cost']:.2f}"
-                f.write(line + "\n")
+                return line
+
+            quarantined_anomalies = [a for a in changes['price_anomalies'] if a.get('quarantined')]
+            soft_anomalies = [a for a in changes['price_anomalies'] if not a.get('quarantined')]
+
+            f.write("PRICE ANOMALIES (QUARANTINED - NOT APPLIED)\n")
+            f.write("-" * 80 + "\n")
+            for anomaly in quarantined_anomalies:
+                f.write(_format_anomaly_line(anomaly) + "\n")
                 for w in anomaly.get('warnings', []):
                     f.write(f"  WARNING: {w}\n")
+            f.write("\n")
+
+            f.write("PRICE SOFT REVIEWS (APPLIED - FOR MANUAL REVIEW)\n")
+            f.write("-" * 80 + "\n")
+            for anomaly in soft_anomalies:
+                f.write(_format_anomaly_line(anomaly) + "\n")
+                for w in anomaly.get('warnings', []):
+                    f.write(f"  NOTE: {w}\n")
             f.write("\n")
 
             f.write("MEDESC CHANGES (REVIEW REQUIRED)\n")
