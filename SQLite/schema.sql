@@ -37,6 +37,7 @@ CREATE TABLE IF NOT EXISTS products (
     unit_of_measurement TEXT,
     pack_quantity INTEGER,
     gp_percent REAL,
+    show_pack_on_storefront INTEGER DEFAULT 0,
     data_quality TEXT DEFAULT 'NEEDS_DESCRIPTION',
     needs_enrichment INTEGER DEFAULT 1,
     enrichment_notes TEXT,
@@ -108,6 +109,25 @@ CREATE TABLE IF NOT EXISTS sales_metrics (
     velocity_score REAL,
     rank_overall INTEGER,
     rank_category INTEGER,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (merkey) REFERENCES products(merkey) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS fresh_pack_profiles (
+    merkey TEXT PRIMARY KEY,
+    pricing_basis TEXT NOT NULL CHECK(pricing_basis IN ('per_kg', 'per_piece', 'fixed_pack', 'review')),
+    min_weight_g INTEGER,
+    max_weight_g INTEGER,
+    display_weight_g INTEGER,
+    display_price_strategy TEXT,
+    source_price REAL,
+    computed_display_price REAL,
+    range_label TEXT,
+    confidence TEXT,
+    auto_detected INTEGER DEFAULT 1,
+    detection_reason TEXT,
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (merkey) REFERENCES products(merkey) ON DELETE CASCADE
 );

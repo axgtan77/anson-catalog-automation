@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS products (
     price_retail REAL,
     price_pack REAL,
     price_case REAL,
+    show_pack_on_storefront INTEGER NOT NULL DEFAULT 0,
     photo_url TEXT,
     status TEXT,
     supplier_name TEXT,
@@ -64,6 +65,7 @@ CREATE TABLE IF NOT EXISTS products (
     display_price REAL,
     range_label TEXT,
     needs_irl_photo INTEGER NOT NULL DEFAULT 0,
+    stock_status TEXT NOT NULL DEFAULT 'in_stock',
     active INTEGER NOT NULL DEFAULT 1,
     published_at TEXT DEFAULT CURRENT_TIMESTAMP,
     search_text TEXT

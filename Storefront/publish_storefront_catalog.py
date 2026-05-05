@@ -15,16 +15,16 @@ SCHEMA_PATH = BASE_DIR / 'schema.sql'
 OVERRIDES_PATH = BASE_DIR / 'storefront_category_overrides.csv'
 FRESH_DISPLAY_OVERRIDES_PATH = BASE_DIR / 'storefront_fresh_display_overrides.csv'
 DEFAULT_WI_ESC_CANDIDATES = [
-    Path(r'D:\Projects\AnsonSupermart-PO-Workbench\apps\api\.staging\import-snapshots\WI_ESC.FPB'),
-    Path(r'D:\Projects\SSIMS_DATA\live\WI_ESC.FPB'),
+    Path('/mnt/ssims/SSIMS/WI_ESC.FPB'),
+    Path('/mnt/ssims/SSIMS/WI_ESC.FPB'),
 ]
 DEFAULT_WI_SDR_CANDIDATES = [
-    Path(r'\\anson_server\ssims\SSIMS\WI_SDR.FPB'),
-    Path(r'D:\Projects\SSIMS_DATA\live\WI_SDR.FPB'),
+    Path('/mnt/ssims/SSIMS/WI_SDR.FPB'),
+    Path('/mnt/ssims/SSIMS/WI_SDR.FPB'),
 ]
 DEFAULT_FE_T_DIR_CANDIDATES = [
-    Path(r'D:\Projects\SSIMS_DATA') / str(datetime.now().year),
-    Path(r'D:\Projects\new ssims'),
+    Path('/mnt/ssims') / str(datetime.now().year),
+    Path('D:\Projects\new ssims'),
 ]
 SALES_LOOKBACK_DAYS = 730
 MIN_VEGETABLE_SALES_SAMPLES = 8
@@ -97,6 +97,8 @@ def ensure_schema(target_conn: sqlite3.Connection) -> None:
         'display_weight_g': 'ALTER TABLE products ADD COLUMN display_weight_g INTEGER',
         'display_price': 'ALTER TABLE products ADD COLUMN display_price REAL',
         'range_label': 'ALTER TABLE products ADD COLUMN range_label TEXT',
+        'stock_status': "ALTER TABLE products ADD COLUMN stock_status TEXT NOT NULL DEFAULT 'in_stock'",
+        'show_pack_on_storefront': 'ALTER TABLE products ADD COLUMN show_pack_on_storefront INTEGER NOT NULL DEFAULT 0',
     }
     for column_name, statement in required_columns.items():
         if column_name not in existing_columns:
@@ -111,7 +113,9 @@ def ensure_source_schema(source_conn: sqlite3.Connection) -> None:
     }
     if 'availability_override' not in existing_columns:
         source_conn.execute("ALTER TABLE products ADD COLUMN availability_override TEXT DEFAULT 'AUTO'")
-        source_conn.commit()
+    if 'show_pack_on_storefront' not in existing_columns:
+        source_conn.execute("ALTER TABLE products ADD COLUMN show_pack_on_storefront INTEGER DEFAULT 0")
+    source_conn.commit()
 
 
 def read_dbf_file(filepath: Path) -> list[dict[str, str]]:
@@ -934,6 +938,7 @@ def fetch_source_rows(source_conn: sqlite3.Connection) -> list[sqlite3.Row]:
         p.class_l2_name,
         p.class_l3_name,
         p.availability_override,
+        COALESCE(p.show_pack_on_storefront, 0) AS show_pack_on_storefront,
         d.id AS department_id,
         d.name AS department_name,
         c.id AS category_id,
@@ -945,6 +950,7 @@ def fetch_source_rows(source_conn: sqlite3.Connection) -> list[sqlite3.Row]:
         pb.barcode,
         br.all_barcodes,
         inv.quantity_on_hand,
+        inv.reorder_point,
         inv.last_updated AS inventory_last_updated,
         sm.txn_count_24m,
         sm.qty_sum_24m,
@@ -1026,10 +1032,16 @@ def rebuild_catalog(
             continue
         avail_override = (row['availability_override'] or 'AUTO').strip().upper()
         stock_qty = float(row['quantity_on_hand'] or 0)
+        reorder_point = float(row['reorder_point'] or 0)
         if avail_override == 'FORCE_UNAVAILABLE':
             continue
+
         if inventory_enabled and stock_qty <= 0:
-            continue
+            stock_status = 'out_of_stock'
+        elif inventory_enabled and reorder_point > 0 and stock_qty <= reorder_point:
+            stock_status = 'low_stock'
+        else:
+            stock_status = 'in_stock'
 
         fresh_display = classify_fresh_display(
             row,
@@ -1105,7 +1117,7 @@ def rebuild_catalog(
             row['merkey'], slug, display_name, brand_name, row['description'], row['size'],
             dept_id, dept_name, dept_slug,
             category_id, category_name, category_slug,
-            row['price_retail'], row['price_pack'], row['price_case'], row['photo_url'], row['data_quality'],
+            row['price_retail'], row['price_pack'], row['price_case'], row['show_pack_on_storefront'], row['photo_url'], row['data_quality'],
             row['supplier_name'], row['class_l1_name'], row['class_l2_name'], row['class_l3_name'],
             row['barcode'], row['all_barcodes'], row['txn_count_24m'], row['qty_sum_24m'],
             row['last_sale_date'], row['priority'], last_acceptance_date,
@@ -1123,6 +1135,7 @@ def rebuild_catalog(
             fresh_display.get('range_label'),
             row['active'], search_text,
             row['needs_irl_photo'],
+            stock_status,
         ))
 
     with target_conn:
@@ -1143,13 +1156,13 @@ def rebuild_catalog(
                 merkey, slug, name, brand, description, size,
                 department_id, department_name, department_slug,
                 category_id, category_name, category_slug,
-                price_retail, price_pack, price_case, photo_url, status,
+                price_retail, price_pack, price_case, show_pack_on_storefront, photo_url, status,
                 supplier_name, class_l1_name, class_l2_name, class_l3_name,
                 barcode, all_barcodes, txn_count_24m, qty_sum_24m,
                 last_sale_date, priority, last_acceptance_date, sellable_state, sellable_note, fulfillment_type, order_unit_label, substitution_policy, fulfillment_note, pricing_basis, min_weight_g, max_weight_g,
-                display_weight_g, display_price, range_label, active, search_text, needs_irl_photo
+                display_weight_g, display_price, range_label, active, search_text, needs_irl_photo, stock_status
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             product_rows,
         )
