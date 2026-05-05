@@ -74,6 +74,16 @@ CURATED_TOP_DEPARTMENT_ORDER = [
     'pharmacies',
     'baby-kids',
 ]
+BRAND_SPOTLIGHTS = [
+    {
+        'slug': 'bread-garden-bakeshop',
+        'name': 'Bread Garden Bakeshop',
+        'brand': 'Bread Garden',
+        'eyebrow': 'In-house bakeshop',
+        'tagline': 'Anson\'s own freshly-baked breads, cakes, and pastries.',
+    },
+]
+BRAND_SPOTLIGHTS_BY_SLUG = {s['slug']: s for s in BRAND_SPOTLIGHTS}
 ADMIN_SESSION_KEY = 'storefront_admin_authenticated'
 ADMIN_USERNAME_SESSION_KEY = 'storefront_admin_username'
 CUSTOMER_SESSION_KEY = 'storefront_customer_id'
@@ -148,6 +158,9 @@ def ensure_runtime_schema() -> None:
         if 'customer_id' not in order_request_columns:
             conn.execute("ALTER TABLE order_requests ADD COLUMN customer_id INTEGER REFERENCES customers(id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_order_requests_customer_id ON order_requests(customer_id)")
+        product_columns = {row['name'] for row in conn.execute("PRAGMA table_info(products)").fetchall()}
+        if 'stock_status' not in product_columns:
+            conn.execute("ALTER TABLE products ADD COLUMN stock_status TEXT NOT NULL DEFAULT 'in_stock'")
         conn.commit()
     finally:
         conn.close()
@@ -553,22 +566,32 @@ def build_badges(row: sqlite3.Row, is_fresh: bool) -> list[dict]:
     return badges
 
 
-def build_availability(sellable_state: str) -> dict:
+def build_availability(sellable_state: str, stock_status: str = 'in_stock') -> dict:
+    if stock_status == 'out_of_stock':
+        return {
+            'label': 'Out of stock',
+            'note': 'This item is currently out of stock.',
+            'cta_label': 'Out of stock',
+            'stock_status': 'out_of_stock',
+        }
     mapping = {
         'orderable': {
-            'label': 'Orderable',
+            'label': 'Low stock' if stock_status == 'low_stock' else 'In stock',
             'note': 'This item is ready to order online.',
             'cta_label': 'Add to basket',
+            'stock_status': stock_status,
         },
         'review_required': {
             'label': 'Fresh item',
             'note': 'Final packed weight and availability are confirmed at fulfillment.',
             'cta_label': 'Add to basket',
+            'stock_status': stock_status,
         },
         'browse_only': {
             'label': 'Browse only',
             'note': 'This item is visible for browsing while catalog details are still being finalized.',
             'cta_label': 'Browse only',
+            'stock_status': stock_status,
         },
     }
     return mapping.get(sellable_state, mapping['browse_only'])
@@ -628,8 +651,17 @@ def build_product_dict(row: sqlite3.Row) -> dict:
     department_slug = row['department_slug'] or slugify(row['department_name'] or '')
     is_fresh = department_slug in FRESH_DEPARTMENT_SLUGS or (row['class_l3_name'] or '') in FRESH_CLASS_HINTS
     sellable_state = (row['sellable_state'] or '').strip().lower() or 'browse_only'
-    availability = build_availability(sellable_state)
+    stock_status = (row['stock_status'] or 'in_stock').strip().lower() if 'stock_status' in row.keys() else 'in_stock'
+    availability = build_availability(sellable_state, stock_status)
     fulfillment = build_fulfillment(row, availability, display_size)
+    show_pack_price = bool(row['show_pack_on_storefront']) if 'show_pack_on_storefront' in row.keys() else False
+    pack_price = row['price_pack'] if 'price_pack' in row.keys() else None
+    pack_option = None
+    if show_pack_price and pack_price is not None and float(pack_price) > 0:
+        pack_option = {
+            'label': 'Pack / Box',
+            'price': float(pack_price),
+        }
     return {
         'merkey': row['merkey'],
         'slug': row['slug'] or slugify(row['name'] or ''),
@@ -645,6 +677,8 @@ def build_product_dict(row: sqlite3.Row) -> dict:
         'card_price': card_price or 0.0,
         'price_retail': row['price_retail'],
         'price_subtext': build_price_subtext(row, card_price),
+        'show_pack_on_storefront': show_pack_price,
+        'pack_option': pack_option,
         'display_size': display_size,
         'size': row['size'] or '',
         'photo_url': photo_url,
@@ -655,7 +689,7 @@ def build_product_dict(row: sqlite3.Row) -> dict:
         },
         'fulfillment': fulfillment,
         'cta_label': availability['cta_label'],
-        'can_request_order': sellable_state in {'orderable', 'review_required'},
+        'can_request_order': sellable_state in {'orderable', 'review_required'} and stock_status != 'out_of_stock',
         'priority': row['priority'] or '',
         'txn_count_24m': row['txn_count_24m'] or 0,
         'last_sale_date': row['last_sale_date'] or '',
@@ -788,6 +822,7 @@ def fetch_products(
     *,
     department_slug: str | None = None,
     category_slug: str | None = None,
+    brand_name: str | None = None,
     search_query: str = '',
     page: int = 1,
     per_page: int = PRODUCT_GRID_PAGE_SIZE,
@@ -806,6 +841,9 @@ def fetch_products(
     if category_slug:
         clauses.append('category_slug = ?')
         params.append(category_slug)
+    if brand_name:
+        clauses.append('brand = ?')
+        params.append(brand_name)
     if search_query:
         like = f'%{search_query}%'
         clauses.append('(name LIKE ? OR brand LIKE ? OR description LIKE ? OR barcode LIKE ? OR supplier_name LIKE ? OR category_name LIKE ? OR department_name LIKE ?)')
@@ -1394,6 +1432,7 @@ def inject_global_template_values() -> dict:
     departments_by_count = fetch_departments(order_by_count=True)
     return {
         'top_departments': build_curated_top_departments(departments_by_count),
+        'top_spotlights': BRAND_SPOTLIGHTS,
         'last_publish_at': fetch_last_publish_at(),
         'build_query_string': build_query_string,
         'cart_count': get_cart_count(),
@@ -1466,6 +1505,42 @@ def department_page(slug: str):
 @app.route('/department/<department_slug>/category/<category_slug>')
 def category_page(department_slug: str, category_slug: str):
     return redirect(url_for('department_page', slug=department_slug, category=category_slug))
+
+
+@app.route('/brand/<slug>')
+def brand_spotlight(slug: str):
+    spotlight = BRAND_SPOTLIGHTS_BY_SLUG.get(slug)
+    if not spotlight:
+        abort(404)
+
+    page = max(request.args.get('page', 1, type=int), 1)
+    active_sort = request.args.get('sort', 'top')
+    active_price_band = request.args.get('price_band', '')
+
+    products, pager, active_sort, active_price_band = fetch_products(
+        brand_name=spotlight['brand'],
+        page=page,
+        per_page=PRODUCT_GRID_PAGE_SIZE,
+        sort_key=active_sort,
+        price_band=active_price_band,
+    )
+
+    breadcrumbs = [
+        {'label': 'Home', 'url': url_for('home')},
+        {'label': spotlight['name'], 'url': None},
+    ]
+
+    return render_template(
+        'brand.html',
+        breadcrumbs=breadcrumbs,
+        spotlight=spotlight,
+        products=products,
+        pager=pager,
+        active_sort=active_sort,
+        active_price_band=active_price_band,
+        sort_options=SORT_OPTIONS,
+        price_bands=PRICE_BANDS,
+    )
 
 
 @app.route('/product/<merkey>')

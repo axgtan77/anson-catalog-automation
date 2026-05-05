@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+
+{% block title %}{{ product.name }} | Anson Supermart{% endblock %}
+
+{% block content %}
+
+<nav class="breadcrumbs" aria-label="Breadcrumb">
+    {% for crumb in breadcrumbs %}
+    {% if crumb.url %}<a href="{{ crumb.url }}">{{ crumb.label }}</a>
+    {% else %}<span>{{ crumb.label }}</span>{% endif %}
+    {% endfor %}
+</nav>
+
+<div class="page-actions">
+    <a class="back-link" href="{{ url_for('home') }}" onclick="return storefrontGoBack('{{ url_for('home') }}')">← Back</a>
+</div>
+
+<section class="product-page" aria-labelledby="product-heading">
+    <div class="product-photo-panel">
+        <img src="{{ product.photo_url }}" alt="{{ product.name }}">
+    </div>
+
+    <div class="product-detail-panel">
+        <p class="eyebrow">
+            {{ product.department_name }}{% if product.category_name %} / {{ product.category_name }}{% endif %}
+        </p>
+
+        <h1 id="product-heading">{{ product.name }}</h1>
+
+        {% if product.badges %}
+        <div class="product-badges product-badges-large">
+            {% for badge in product.badges %}
+            <span class="product-badge badge-{{ badge.tone }}">{{ badge.label }}</span>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        <div class="detail-brand">{{ product.brand or "Unbranded" }}</div>
+
+        <div class="detail-price">P{{ "{:,.2f}".format(product.card_price) }}</div>
+        {% if product.price_subtext %}<div class="detail-price-subtext">{{ product.price_subtext }}</div>{% endif %}
+        {% if product.pack_option %}
+        <div class="pack-option-box">
+            <div class="pack-option-label">Also available as {{ product.pack_option.label }}</div>
+            <div class="pack-option-price">P{{ "{:,.2f}".format(product.pack_option.price) }}</div>
+        </div>
+        {% endif %}
+
+        {% if product.display_size %}
+        <div class="detail-size">{{ product.display_size }}</div>
+        {% endif %}
+
+        <div class="availability-box stock-box-{{ product.availability.stock_status }}">
+            <strong>{{ product.availability.label }}</strong>
+            <span>{{ product.availability.note }}</span>
+        </div>
+
+        <div class="availability-box">
+            <strong>{{ product.fulfillment.label }}</strong>
+            <span>
+                {% if product.fulfillment.order_unit_label %}Sold as {{ product.fulfillment.order_unit_label }}. {% endif %}
+                {{ product.fulfillment.substitution_label }}. {{ product.fulfillment.note }}
+            </span>
+        </div>
+
+        <p class="detail-description">{{ product.description }}</p>
+
+        <dl class="detail-grid">
+            <div>
+                <dt>Supplier</dt>
+                <dd>{{ product.supplier_name or "-" }}</dd>
+            </div>
+            <div>
+                <dt>Barcode</dt>
+                <dd>{{ product.barcode or "-" }}</dd>
+            </div>
+            <div>
+                <dt>Class</dt>
+                <dd>{{ product.class_l3_name or product.class_l2_name or "-" }}</dd>
+            </div>
+            <div>
+                <dt>Merkey</dt>
+                <dd>{{ product.merkey }}</dd>
+            </div>
+        </dl>
+
+        {% if product.can_request_order %}
+        <form method="post" action="{{ url_for('add_to_cart', merkey=product.merkey) }}" class="add-to-cart-form js-ajax-cart-form" data-product-name="{{ product.name }}">
+            <input type="hidden" name="next" value="{{ request.path }}">
+            <div>
+                <label for="quantity" class="cart-qty-label">Qty</label>
+                <div class="quantity-stepper quantity-stepper-large" aria-label="Quantity selector">
+                    <button class="stepper-btn" type="button" data-step="-1" aria-label="Decrease quantity">-</button>
+                    <input id="quantity" name="quantity" type="number" min="1" value="1" class="stepper-input cart-qty-input" inputmode="numeric">
+                    <button class="stepper-btn" type="button" data-step="1" aria-label="Increase quantity">+</button>
+                </div>
+            </div>
+            <button class="primary-cta" type="submit">{{ product.cta_label }}</button>
+        </form>
+        {% else %}
+        <button class="primary-cta" type="button" disabled>{{ product.cta_label }}</button>
+        {% endif %}
+    </div>
+</section>
+
+{% if related %}
+<section class="section-block">
+    <div class="section-heading">
+        <h2>Related products</h2>
+    </div>
+    <div class="product-grid">
+        {% for item in related %}
+        {% set card_product = item %}
+        {% include "_product_card.html" %}
+        {% endfor %}
+    </div>
+</section>
+{% endif %}
+
+{% endblock %}

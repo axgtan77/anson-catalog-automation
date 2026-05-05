@@ -1,0 +1,48 @@
+<article class="product-card">
+    <a class="product-card-link" href="{{ url_for('product_page', merkey=card_product.merkey, slug=card_product.slug) }}">
+        <img src="{{ card_product.photo_url }}" alt="{{ card_product.name }}" loading="lazy">
+        <div class="product-card-body">
+            {% if card_product.badges %}
+            <div class="product-badges">
+                {% for badge in card_product.badges %}
+                <span class="product-badge badge-{{ badge.tone }}">{{ badge.label }}</span>
+                {% endfor %}
+            </div>
+            {% endif %}
+            <div class="product-brand">{{ card_product.brand or "Unbranded" }}</div>
+            <div class="product-name">{{ card_product.name }}</div>
+            {% if card_product.department_name and card_product.category_name is defined %}
+            <div class="product-meta">
+                {% if card_product.category_name %}
+                {{ card_product.department_name }} / {{ card_product.category_name }}
+                {% else %}
+                {{ card_product.department_name }}
+                {% endif %}
+            </div>
+            {% elif card_product.category_name %}
+            <div class="product-meta">{{ card_product.category_name }}</div>
+            {% endif %}
+            <div class="product-price">P{{ "{:,.2f}".format(card_product.card_price) }}</div>
+            {% if card_product.price_subtext %}<div class="product-price-subtext">{{ card_product.price_subtext }}</div>{% endif %}
+            {% if card_product.pack_option %}<div class="product-pack-subtext">Pack / Box: P{{ "{:,.2f}".format(card_product.pack_option.price) }}</div>{% endif %}
+            {% if card_product.display_size %}<div class="product-size">{{ card_product.display_size }}</div>{% endif %}
+            <div class="availability-chip stock-{{ card_product.availability.stock_status }}">{{ card_product.availability.label }}</div>
+        </div>
+    </a>
+
+    <div class="product-card-footer">
+        {% if card_product.can_request_order %}
+        <form method="post" action="{{ url_for('add_to_cart', merkey=card_product.merkey) }}" class="product-card-cart-form js-ajax-cart-form" data-product-name="{{ card_product.name }}">
+            <input type="hidden" name="next" value="{{ request.full_path.rstrip('?') if request.full_path else request.path }}">
+            <div class="quantity-stepper" aria-label="Quantity selector">
+                <button class="stepper-btn" type="button" data-step="-1" aria-label="Decrease quantity">-</button>
+                <input class="stepper-input" type="number" name="quantity" min="1" value="1" inputmode="numeric" aria-label="Quantity">
+                <button class="stepper-btn" type="button" data-step="1" aria-label="Increase quantity">+</button>
+            </div>
+            <button class="product-card-cta" type="submit">Add to basket</button>
+        </form>
+        {% else %}
+        <a class="product-card-secondary" href="{{ url_for('product_page', merkey=card_product.merkey, slug=card_product.slug) }}">View details</a>
+        {% endif %}
+    </div>
+</article>
