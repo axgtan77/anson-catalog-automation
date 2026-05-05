@@ -170,6 +170,16 @@
           </label>
           <div style="margin-top:6px;color:#666;font-size:12px">Only use when MP_MER pack pricing is customer-facing and should appear beside the base unit price.</div>
         </div>
+        <div style="margin-top:10px">
+          <label>Pack display label</label>
+          <input type="text" name="pack_display_label" value="{{ product.pack_display_label or '' }}" placeholder="e.g. Box of 10">
+          <div style="margin-top:6px;color:#666;font-size:12px">Optional storefront label for the alternate pack, box, or bundle.</div>
+        </div>
+        <div style="margin-top:10px">
+          <label>Pack photo URL</label>
+          <input type="text" name="pack_photo_url" value="{{ product.pack_photo_url or '' }}" placeholder="https://... or leave blank">
+          <div style="margin-top:6px;color:#666;font-size:12px">Optional alternate image to use when highlighting the pack / box offer.</div>
+        </div>
       </div>
 
       <div style="flex:1;min-width:220px">

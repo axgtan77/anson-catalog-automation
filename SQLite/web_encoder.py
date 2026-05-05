@@ -80,6 +80,12 @@ def ensure_runtime_schema():
     if "show_pack_on_storefront" not in cols:
         cur.execute("ALTER TABLE products ADD COLUMN show_pack_on_storefront INTEGER DEFAULT 0")
         changed = True
+    if "pack_display_label" not in cols:
+        cur.execute("ALTER TABLE products ADD COLUMN pack_display_label TEXT")
+        changed = True
+    if "pack_photo_url" not in cols:
+        cur.execute("ALTER TABLE products ADD COLUMN pack_photo_url TEXT")
+        changed = True
     cur.execute("PRAGMA table_info(images)")
     image_cols = {r[1] for r in cur.fetchall()}
     image_runtime_cols = {
@@ -1335,6 +1341,8 @@ def product_update(merkey):
     notes=(request.form.get("notes") or "").strip()
     availability_override = (request.form.get("availability_override") or "AUTO").strip().upper()
     show_pack_on_storefront = 1 if (request.form.get("show_pack_on_storefront") or "").strip() == "1" else 0
+    pack_display_label = (request.form.get("pack_display_label") or "").strip()
+    pack_photo_url = (request.form.get("pack_photo_url") or "").strip()
     primary_barcode=(request.form.get("primary_barcode") or "").strip()
     auto_fill_description = (request.form.get("auto_fill_description") or "").strip() == "1"
     auto_generate_size = (request.form.get("auto_generate_size") or "").strip() == "1"
@@ -1399,11 +1407,11 @@ def product_update(merkey):
     cur.execute("""
       UPDATE products SET description=?, name=?, brand_id=?, category_id=?, department_id=?,
                           size=?, weight_volume=?, unit_of_measurement=?,
-                          availability_override=?, show_pack_on_storefront=?,
+                          availability_override=?, show_pack_on_storefront=?, pack_display_label=?, pack_photo_url=?,
                           data_quality=?, needs_enrichment=?, enrichment_notes=?,
                           updated_at=CURRENT_TIMESTAMP
       WHERE merkey=?
-    """,(description,name,brand_id,category_id,department_id,size,weight_volume,unit,availability_override,show_pack_on_storefront,dq,ne,notes or "Updated via web encoder", merkey))
+    """,(description,name,brand_id,category_id,department_id,size,weight_volume,unit,availability_override,show_pack_on_storefront,pack_display_label,pack_photo_url,dq,ne,notes or "Updated via web encoder", merkey))
 
     # Allow barcode correction from product edit page.
     if primary_barcode:
@@ -1434,6 +1442,8 @@ def product_update(merkey):
         ("unit_of_measurement", old_product.get("unit_of_measurement") or "", unit),
         ("availability_override", old_product.get("availability_override") or "AUTO", availability_override),
         ("show_pack_on_storefront", str(old_product.get("show_pack_on_storefront") or 0), str(show_pack_on_storefront)),
+        ("pack_display_label", old_product.get("pack_display_label") or "", pack_display_label),
+        ("pack_photo_url", old_product.get("pack_photo_url") or "", pack_photo_url),
         ("primary_barcode", old_primary_barcode, primary_barcode),
     ]
     for field_name, old_value, new_value in field_changes:

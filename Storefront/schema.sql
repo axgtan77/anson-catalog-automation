@@ -39,6 +39,8 @@ CREATE TABLE IF NOT EXISTS products (
     price_pack REAL,
     price_case REAL,
     show_pack_on_storefront INTEGER NOT NULL DEFAULT 0,
+    pack_display_label TEXT,
+    pack_photo_url TEXT,
     photo_url TEXT,
     status TEXT,
     supplier_name TEXT,

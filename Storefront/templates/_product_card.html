@@ -1,6 +1,6 @@
 <article class="product-card">
     <a class="product-card-link" href="{{ url_for('product_page', merkey=card_product.merkey, slug=card_product.slug) }}">
-        <img src="{{ card_product.photo_url }}" alt="{{ card_product.name }}" loading="lazy">
+        <img src="{{ card_product.display_photo_url }}" alt="{{ card_product.name }}" loading="lazy">
         <div class="product-card-body">
             {% if card_product.badges %}
             <div class="product-badges">
@@ -24,7 +24,7 @@
             {% endif %}
             <div class="product-price">P{{ "{:,.2f}".format(card_product.card_price) }}</div>
             {% if card_product.price_subtext %}<div class="product-price-subtext">{{ card_product.price_subtext }}</div>{% endif %}
-            {% if card_product.pack_option %}<div class="product-pack-subtext">Pack / Box: P{{ "{:,.2f}".format(card_product.pack_option.price) }}</div>{% endif %}
+            {% if card_product.pack_option %}<div class="product-pack-subtext">{{ card_product.pack_option.label }}: P{{ "{:,.2f}".format(card_product.pack_option.price) }}</div>{% endif %}
             {% if card_product.display_size %}<div class="product-size">{{ card_product.display_size }}</div>{% endif %}
             <div class="availability-chip stock-{{ card_product.availability.stock_status }}">{{ card_product.availability.label }}</div>
         </div>

@@ -656,11 +656,14 @@ def build_product_dict(row: sqlite3.Row) -> dict:
     fulfillment = build_fulfillment(row, availability, display_size)
     show_pack_price = bool(row['show_pack_on_storefront']) if 'show_pack_on_storefront' in row.keys() else False
     pack_price = row['price_pack'] if 'price_pack' in row.keys() else None
+    pack_label = (row['pack_display_label'] or '').strip() if 'pack_display_label' in row.keys() else ''
+    pack_photo_url = (row['pack_photo_url'] or '').strip() if 'pack_photo_url' in row.keys() else ''
     pack_option = None
     if show_pack_price and pack_price is not None and float(pack_price) > 0:
         pack_option = {
-            'label': 'Pack / Box',
+            'label': pack_label or 'Pack / Box',
             'price': float(pack_price),
+            'photo_url': pack_photo_url or None,
         }
     return {
         'merkey': row['merkey'],
@@ -682,6 +685,7 @@ def build_product_dict(row: sqlite3.Row) -> dict:
         'display_size': display_size,
         'size': row['size'] or '',
         'photo_url': photo_url,
+        'display_photo_url': (pack_option.get('photo_url') if pack_option and pack_option.get('photo_url') else photo_url),
         'badges': build_badges(row, is_fresh),
         'availability': {
             'label': availability['label'],
