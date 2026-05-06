@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS products (
     show_pack_on_storefront INTEGER NOT NULL DEFAULT 0,
     pack_display_label TEXT,
     pack_photo_url TEXT,
+    pack_barcode TEXT,
     photo_url TEXT,
     status TEXT,
     supplier_name TEXT,

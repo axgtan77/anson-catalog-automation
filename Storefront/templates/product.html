@@ -43,6 +43,7 @@
         <div class="pack-option-box">
             <div class="pack-option-label">Also available as {{ product.pack_option.label }}</div>
             <div class="pack-option-price">P{{ "{:,.2f}".format(product.pack_option.price) }}</div>
+            {% if product.pack_option.barcode %}<div class="pack-option-meta">Pack barcode: {{ product.pack_option.barcode }}</div>{% endif %}
         </div>
         {% endif %}
 

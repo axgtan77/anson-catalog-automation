@@ -180,6 +180,11 @@
           <input type="text" name="pack_photo_url" value="{{ product.pack_photo_url or '' }}" placeholder="https://... or leave blank">
           <div style="margin-top:6px;color:#666;font-size:12px">Optional alternate image to use when highlighting the pack / box offer.</div>
         </div>
+        <div style="margin-top:10px">
+          <label>Pack barcode</label>
+          <input type="text" name="pack_barcode" value="{{ product.pack_barcode or '' }}" placeholder="alternate barcode for the pack / box">
+          <div style="margin-top:6px;color:#666;font-size:12px">Attach the best alternate barcode for the pack / box version shown with the pack price.</div>
+        </div>
       </div>
 
       <div style="flex:1;min-width:220px">

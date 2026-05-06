@@ -323,6 +323,7 @@ def extract_product_barcodes(record):
     - Primary: SUSTOK (item barcode)
     - Fallback primary: MEAN13 (legacy)
     - Keep SUSTK1/SUSTK2 and other barcode fields as alternates.
+    - Pack barcode candidate priority: SUSTK2, SUSTK1, then BARCD1..5 excluding the primary.
     """
     sustok = normalize_barcode(record.get("SUSTOK", ""))
     mean13 = normalize_barcode(record.get("MEAN13", ""))
@@ -340,7 +341,12 @@ def extract_product_barcodes(record):
     )
     if not primary and candidates:
         primary = candidates[0]
-    return primary, candidates
+    pack_barcode = None
+    for candidate in [sustk2, sustk1, barcd1, barcd2, barcd3, barcd4, barcd5]:
+        if candidate and candidate != primary:
+            pack_barcode = candidate
+            break
+    return primary, candidates, pack_barcode
 
 
 def load_supplier_name_map(mp_sup_path):
@@ -721,7 +727,7 @@ def sync_mp_mer(db_path='anson_products.db', mp_mer_path=None, mp_sup_path=None,
             if price <= 0:
                 continue  # Skip products with no price
             
-            primary_barcode, barcodes = extract_product_barcodes(record)
+            primary_barcode, barcodes, pack_barcode = extract_product_barcodes(record)
             supplier_code = record.get('SURKEY', '').strip()
             supplier_name = supplier_name_map.get(supplier_code, "") if supplier_code else ""
             class_bits = derive_class_triplet(record.get('CLRKEY', ''), cls_map)
@@ -771,14 +777,15 @@ def sync_mp_mer(db_path='anson_products.db', mp_mer_path=None, mp_sup_path=None,
                     INSERT INTO products (
                         merkey, description, source_medesc, supplier_code, supplier_name,
                         clrkey, class_l1_code, class_l1_name, class_l2_code, class_l2_name, class_l3_code, class_l3_name,
-                        data_quality, needs_enrichment, active, first_seen_date
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NEEDS_DESCRIPTION', 1, 1, date('now'))
+                        pack_barcode, data_quality, needs_enrichment, active, first_seen_date
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'NEEDS_DESCRIPTION', 1, 1, date('now'))
                 """, (
                     merkey, medesc, medesc, supplier_code, supplier_name,
                     class_bits["clrkey"],
                     class_bits["class_l1_code"], class_bits["class_l1_name"],
                     class_bits["class_l2_code"], class_bits["class_l2_name"],
                     class_bits["class_l3_code"], class_bits["class_l3_name"],
+                    pack_barcode,
                 ))
 
                 # Insert price (store all three modes + cost)
@@ -817,6 +824,14 @@ def sync_mp_mer(db_path='anson_products.db', mp_mer_path=None, mp_sup_path=None,
                             updated_at = CURRENT_TIMESTAMP
                         WHERE merkey = ?
                     """, (medesc, merkey))
+
+                if pack_barcode != ((existing_products[merkey].get('pack_barcode') or '').strip()):
+                    cursor.execute("""
+                        UPDATE products SET
+                            pack_barcode = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE merkey = ?
+                    """, (pack_barcode, merkey))
 
                 # 1b. Keep supplier code in sync from source file.
                 old_supplier = (existing_products[merkey].get('supplier_code') or '').strip()

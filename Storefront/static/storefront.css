@@ -944,6 +944,12 @@ h2 {
     font-weight: 800;
     color: var(--ink);
 }
+.pack-option-meta {
+    margin-top: 6px;
+    font-size: 0.78rem;
+    color: var(--muted);
+    font-weight: 600;
+}
 .availability-chip {
     display: inline-flex;
     margin-top: 10px;

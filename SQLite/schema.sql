@@ -40,6 +40,7 @@ CREATE TABLE IF NOT EXISTS products (
     show_pack_on_storefront INTEGER DEFAULT 0,
     pack_display_label TEXT,
     pack_photo_url TEXT,
+    pack_barcode TEXT,
     data_quality TEXT DEFAULT 'NEEDS_DESCRIPTION',
     needs_enrichment INTEGER DEFAULT 1,
     enrichment_notes TEXT,

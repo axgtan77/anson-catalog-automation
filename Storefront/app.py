@@ -658,12 +658,14 @@ def build_product_dict(row: sqlite3.Row) -> dict:
     pack_price = row['price_pack'] if 'price_pack' in row.keys() else None
     pack_label = (row['pack_display_label'] or '').strip() if 'pack_display_label' in row.keys() else ''
     pack_photo_url = (row['pack_photo_url'] or '').strip() if 'pack_photo_url' in row.keys() else ''
+    pack_barcode = (row['pack_barcode'] or '').strip() if 'pack_barcode' in row.keys() else ''
     pack_option = None
     if show_pack_price and pack_price is not None and float(pack_price) > 0:
         pack_option = {
             'label': pack_label or 'Pack / Box',
             'price': float(pack_price),
             'photo_url': pack_photo_url or None,
+            'barcode': pack_barcode or None,
         }
     return {
         'merkey': row['merkey'],
