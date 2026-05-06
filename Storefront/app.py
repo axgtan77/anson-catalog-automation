@@ -659,14 +659,28 @@ def build_product_dict(row: sqlite3.Row) -> dict:
     pack_label = (row['pack_display_label'] or '').strip() if 'pack_display_label' in row.keys() else ''
     pack_photo_url = (row['pack_photo_url'] or '').strip() if 'pack_photo_url' in row.keys() else ''
     pack_barcode = (row['pack_barcode'] or '').strip() if 'pack_barcode' in row.keys() else ''
-    pack_option = None
+    selling_options = []
+    if row['price_retail'] is not None:
+        selling_options.append({
+            'key': 'retail',
+            'label': 'Piece',
+            'price': float(row['price_retail']),
+            'barcode': (row['barcode'] or '').strip() or None,
+            'photo_url': photo_url,
+            'size_label': display_size or None,
+            'is_default': True,
+        })
     if show_pack_price and pack_price is not None and float(pack_price) > 0:
-        pack_option = {
+        selling_options.append({
+            'key': 'pack',
             'label': pack_label or 'Pack / Box',
             'price': float(pack_price),
-            'photo_url': pack_photo_url or None,
             'barcode': pack_barcode or None,
-        }
+            'photo_url': pack_photo_url or None,
+            'size_label': display_size or None,
+            'is_default': False,
+        })
+    pack_option = selling_options[1] if len(selling_options) > 1 else None
     return {
         'merkey': row['merkey'],
         'slug': row['slug'] or slugify(row['name'] or ''),
@@ -684,6 +698,7 @@ def build_product_dict(row: sqlite3.Row) -> dict:
         'price_subtext': build_price_subtext(row, card_price),
         'show_pack_on_storefront': show_pack_price,
         'pack_option': pack_option,
+        'selling_options': selling_options,
         'display_size': display_size,
         'size': row['size'] or '',
         'photo_url': photo_url,

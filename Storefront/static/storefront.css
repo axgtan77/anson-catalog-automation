@@ -924,31 +924,96 @@ h2 {
     letter-spacing: -0.02em;
     margin: 12px 0;
 }
-.pack-option-box {
-    margin: 10px 0 4px;
-    padding: 12px 14px;
+.selling-options-block {
+    margin: 14px 0 8px;
+    padding: 14px;
     border-radius: var(--r-sm);
-    background: var(--amber-tint);
-    border: 1px solid var(--amber-light);
+    background: var(--bg-subtle);
+    border: 1px solid var(--border-light);
 }
-.pack-option-label {
-    font-size: 0.78rem;
+.selling-options-heading {
+    font-size: 0.82rem;
     font-weight: 800;
     text-transform: uppercase;
-    letter-spacing: 0.06em;
-    color: var(--amber);
+    letter-spacing: 0.07em;
+    color: var(--muted);
+    margin-bottom: 10px;
 }
-.pack-option-price {
-    margin-top: 4px;
-    font-size: 1.05rem;
+.selling-options-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+}
+.selling-option-card {
+    display: flex;
+    justify-content: space-between;
+    gap: 14px;
+    padding: 12px 14px;
+    border-radius: var(--r-sm);
+    border: 1px solid var(--border);
+    background: #fff;
+}
+.selling-option-card.is-default {
+    border-color: var(--red-light);
+    background: var(--red-tint);
+}
+.selling-option-main {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.selling-option-label-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+.selling-option-label {
+    font-size: 0.92rem;
     font-weight: 800;
     color: var(--ink);
 }
-.pack-option-meta {
-    margin-top: 6px;
+.selling-option-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 8px;
+    border-radius: 999px;
+    font-size: 0.68rem;
+    font-weight: 800;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    background: #fff;
+    border: 1px solid var(--red-light);
+    color: var(--red);
+}
+.selling-option-price {
+    font-size: 1.08rem;
+    font-weight: 800;
+    color: var(--red);
+}
+.selling-option-meta-group {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+.selling-option-meta {
     font-size: 0.78rem;
     color: var(--muted);
     font-weight: 600;
+}
+.selling-option-thumb {
+    width: 84px;
+    min-width: 84px;
+    height: 84px;
+    border-radius: var(--r-xs);
+    overflow: hidden;
+    background: #fff;
+    border: 1px solid var(--border-light);
+}
+.selling-option-thumb img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
 }
 .availability-chip {
     display: inline-flex;

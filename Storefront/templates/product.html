@@ -39,12 +39,33 @@
 
         <div class="detail-price">P{{ "{:,.2f}".format(product.card_price) }}</div>
         {% if product.price_subtext %}<div class="detail-price-subtext">{{ product.price_subtext }}</div>{% endif %}
-        {% if product.pack_option %}
-        <div class="pack-option-box">
-            <div class="pack-option-label">Also available as {{ product.pack_option.label }}</div>
-            <div class="pack-option-price">P{{ "{:,.2f}".format(product.pack_option.price) }}</div>
-            {% if product.pack_option.barcode %}<div class="pack-option-meta">Pack barcode: {{ product.pack_option.barcode }}</div>{% endif %}
-        </div>
+
+        {% if product.selling_options and product.selling_options|length > 1 %}
+        <section class="selling-options-block" aria-label="Available pack sizes">
+            <div class="selling-options-heading">Available pack sizes</div>
+            <div class="selling-options-list">
+                {% for option in product.selling_options %}
+                <div class="selling-option-card{% if option.is_default %} is-default{% endif %}">
+                    <div class="selling-option-main">
+                        <div class="selling-option-label-row">
+                            <span class="selling-option-label">{{ option.label }}</span>
+                            {% if option.is_default %}<span class="selling-option-badge">Base</span>{% endif %}
+                        </div>
+                        <div class="selling-option-price">P{{ "{:,.2f}".format(option.price) }}</div>
+                        <div class="selling-option-meta-group">
+                            {% if option.size_label %}<div class="selling-option-meta">Size: {{ option.size_label }}</div>{% endif %}
+                            {% if option.barcode %}<div class="selling-option-meta">Barcode: {{ option.barcode }}</div>{% endif %}
+                        </div>
+                    </div>
+                    {% if option.photo_url %}
+                    <div class="selling-option-thumb">
+                        <img src="{{ option.photo_url }}" alt="{{ product.name }} {{ option.label }}">
+                    </div>
+                    {% endif %}
+                </div>
+                {% endfor %}
+            </div>
+        </section>
         {% endif %}
 
         {% if product.display_size %}
