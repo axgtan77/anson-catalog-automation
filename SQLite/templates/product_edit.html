@@ -1,6 +1,32 @@
 {% extends "base.html" %}
 {% block title %}Edit {{ product.merkey }}{% endblock %}
 {% block content %}
+<style>
+  .form-grid{display:grid;gap:14px}
+  .grid-3{grid-template-columns:repeat(auto-fit,minmax(240px,1fr))}
+  .grid-2{grid-template-columns:repeat(auto-fit,minmax(260px,1fr))}
+  .section{padding:16px;border:1px solid #eee;border-radius:10px;background:#fdfdfd;margin-top:14px}
+  .section > h3{font-size:14px;font-weight:800;color:#444;text-transform:uppercase;letter-spacing:.04em;margin-bottom:12px}
+  .help{margin-top:6px;color:#666;font-size:12px}
+  .option-block{padding:14px;border:1px solid #e2e2e2;border-radius:10px;background:#fff;margin-top:10px}
+  .pack-fields{margin-top:12px;transition:opacity .15s}
+  .pack-fields.is-collapsed{opacity:.45;pointer-events:none}
+  .pack-fields.is-collapsed input,
+  .pack-fields.is-collapsed select,
+  .pack-fields.is-collapsed button{background:#f4f4f4}
+  .pack-upload-controls{display:flex;flex-direction:column;gap:8px;margin-top:10px;padding:12px;border:1px dashed #d4d4d4;border-radius:10px;background:#fafafa}
+  .pack-upload-controls label.field{font-weight:700;font-size:13px}
+  .option-tag{display:inline-block;padding:2px 8px;border-radius:999px;font-size:11px;font-weight:800;letter-spacing:.04em;text-transform:uppercase}
+  .option-tag.always{background:#e8f0fe;color:#1a44a3}
+  .option-tag.optional{background:#fff3cd;color:#856404}
+  .price-readout{margin-top:6px;font-weight:700;color:#1a44a3}
+  .price-readout.empty{color:#888;font-weight:500}
+  .pack-nudge{display:inline-flex;align-items:center;gap:6px;margin-left:8px;padding:3px 10px;border-radius:999px;background:#fff3cd;color:#856404;font-size:11px;font-weight:800;text-decoration:none;cursor:pointer;border:0}
+  .pack-nudge:hover{background:#ffe69b}
+  .pack-thumb{width:120px;height:120px;border:1px solid #eee;border-radius:10px;background:#fafafa;display:flex;align-items:center;justify-content:center;overflow:hidden;font-size:11px;color:#888}
+  .pack-thumb img{width:100%;height:100%;object-fit:contain;background:#fff}
+</style>
+
 <div class="row" style="justify-content:space-between;align-items:flex-end">
   <div>
     <h2>Edit Product</h2>
@@ -28,6 +54,9 @@
 </div>
 {% endif %}
 
+{% set has_pack_pricing = product.price_pack is not none and product.price_pack > 0 %}
+{% set has_case_pricing = product.price_case is not none and product.price_case > 0 %}
+
 <div class="card">
   <div class="row" style="align-items:flex-start">
     <div class="imgbox">
@@ -43,6 +72,9 @@
         <div><span class="badge {% if product.data_quality=='COMPLETE' %}b-ok{% else %}b-warn{% endif %}">{{ product.data_quality }}</span></div>
         {% if not product.image_url %}
           <div><span class="badge b-bad">NO PHOTO</span></div>
+        {% endif %}
+        {% if has_pack_pricing %}
+          <button type="button" class="pack-nudge" id="pack_nudge_btn" title="Click to jump to the pack settings">Pack pricing detected — review Option 2 ↓</button>
         {% endif %}
       </div>
 
@@ -72,6 +104,7 @@
         <div><b>Stock On Hand</b><div title="Live ledger: {% if product.quantity_on_hand is not none %}{{ '%.2f'|format(product.quantity_on_hand) }}{% else %}n/a{% endif %}&#10;Posted stock: {% if product.posted_quantity_on_hand is not none %}{{ '%.2f'|format(product.posted_quantity_on_hand) }}{% else %}n/a{% endif %}&#10;Ledger updated: {{ product.inventory_last_updated or '-' }}&#10;Posted updated: {{ product.posted_inventory_last_updated or '-' }}">{% if product.quantity_on_hand is not none %}{{ "%.2f"|format(product.quantity_on_hand) }}{% else %}-{% endif %}</div></div>
         <div><b>Stock Updated</b><div>{{ product.inventory_last_updated or "-" }}</div></div>
         <div><b>Storefront Override</b><div>{{ product.availability_override or "AUTO" }}</div></div>
+        <div><b>Alpha Visibility</b><div>{{ product.alpha_override or "AUTO" }}</div></div>
       </div>
 
       <div style="margin-top:10px;color:#444">
@@ -87,7 +120,7 @@
         {% for k, v in list_state.items() %}
         <input type="hidden" name="{{ k }}" value="{{ v }}">
         {% endfor %}
-        <label style="font-weight:900;margin-bottom:6px;display:block">Add Product Photo</label>
+        <label style="font-weight:900;margin-bottom:6px;display:block">Add Primary Product Photo</label>
         <div style="display:grid;grid-template-columns:minmax(260px,1fr);gap:10px">
           <div>
             <label style="display:block;font-weight:700;margin-bottom:4px">Choose from phone album / files</label>
@@ -107,7 +140,7 @@
             Apply White BG processing (optional)
           </label>
         </div>
-        <div style="color:#666;font-size:12px;margin-top:6px">
+        <div class="help">
           Leave one of the two inputs blank. On mobile, use the first field for album/files and the second only if you want to open the camera directly.<br>
           Uses CanonicalBarcode (primary barcode) as filename when available, otherwise MERKEY.
           Uploads to S3: <b>ansonsupermart.com/images/</b>
@@ -117,128 +150,276 @@
   </div>
 </div>
 
+<form id="pack_uploader_form" method="post" action="{{ url_for('upload_pack_photo', merkey=product.merkey) }}" enctype="multipart/form-data" style="display:none">
+  {% for k, v in list_state.items() %}
+  <input type="hidden" name="{{ k }}" value="{{ v }}">
+  {% endfor %}
+</form>
+
 <div class="card">
   <form method="post" action="{{ url_for('product_update', merkey=product.merkey) }}">
     {% for k, v in list_state.items() %}
     <input type="hidden" name="{{ k }}" value="{{ v }}">
     {% endfor %}
-    <div class="row" style="gap:14px;align-items:flex-start">
-      <div style="flex:2;min-width:260px">
-        <label>Description *</label>
-        <textarea id="description" name="description">{{ product.description or "" }}</textarea>
-        <div style="margin-top:8px">
-          <label style="display:flex;align-items:center;gap:8px;font-weight:700">
-            <input type="checkbox" id="auto_fill_description" name="auto_fill_description" value="1">
-            Auto-fill with Brand + Name + Size
-          </label>
+
+    <div class="section">
+      <h3>Identity</h3>
+      <div class="form-grid grid-3">
+        <div style="grid-column:1 / -1">
+          <label>Description *</label>
+          <textarea id="description" name="description">{{ product.description or "" }}</textarea>
+          <div style="margin-top:8px">
+            <label style="display:flex;align-items:center;gap:8px;font-weight:700">
+              <input type="checkbox" id="auto_fill_description" name="auto_fill_description" value="1">
+              Auto-fill with Brand + Name + Size
+            </label>
+          </div>
         </div>
-      </div>
-
-      <div style="flex:1;min-width:220px">
-        <label>Product Name *</label>
-        <input type="text" id="name" name="name" value="{{ product.name or '' }}">
-      </div>
-
-      <div style="flex:1;min-width:220px">
-        <label>Brand *</label>
-        <input type="text" id="brand" name="brand" value="{{ product.brand_name or '' }}" list="brandlist">
-        <datalist id="brandlist">
-          {% for b in brands %}
-            <option value="{{ b.name }}"></option>
-          {% endfor %}
-        </datalist>
+        <div>
+          <label>Product Name *</label>
+          <input type="text" id="name" name="name" value="{{ product.name or '' }}">
+        </div>
+        <div>
+          <label>Brand *</label>
+          <input type="text" id="brand" name="brand" value="{{ product.brand_name or '' }}" list="brandlist">
+          <datalist id="brandlist">
+            {% for b in brands %}
+              <option value="{{ b.name }}"></option>
+            {% endfor %}
+          </datalist>
+        </div>
       </div>
     </div>
 
-    <div class="row" style="gap:14px;margin-top:12px">
-      <div style="flex:1;min-width:220px">
-        <label>Primary Barcode</label>
-        <input type="text" name="primary_barcode" value="{{ product.primary_barcode or '' }}" placeholder="e.g. 4800000000000">
+    <div class="section">
+      <h3>Classification</h3>
+      <div class="form-grid grid-2">
+        <div>
+          <label>Department</label>
+          <select id="department_id" name="department_id">
+            <option value="">-- Select --</option>
+            {% for d in departments %}
+              <option value="{{ d.id }}" {% if product.department_id==d.id %}selected{% endif %}>{{ d.name }}</option>
+            {% endfor %}
+          </select>
+          <div class="help">Category choices are filtered by Department.</div>
+        </div>
+        <div>
+          <label>Category *</label>
+          <select id="category_id" name="category_id">
+            <option value="">-- Select --</option>
+            {% for c in categories %}
+              <option value="{{ c.id }}" data-department-id="{{ c.department_id or '' }}" {% if product.category_id==c.id %}selected{% endif %}>{{ c.name }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="section">
+      <h3>Sizing</h3>
+      <div class="form-grid grid-3">
+        <div>
+          <label>Size *</label>
+          <input type="text" id="size" name="size" value="{{ product.size or '' }}" placeholder="e.g. 600g, 1L, 2 pcs">
+          <div style="margin-top:8px">
+            <label style="display:flex;align-items:center;gap:8px;font-weight:700">
+              <input type="checkbox" id="auto_generate_size" name="auto_generate_size" value="1" {% if product.auto_generate_size_default %}checked{% endif %}>
+              Auto-generate from Numeric Size + Unit
+            </label>
+          </div>
+        </div>
+        <div>
+          <label>Numeric Size</label>
+          <input type="number" step="0.001" id="weight_volume" name="weight_volume" value="{{ product.structured_weight_value or product.weight_volume or '' }}" placeholder="e.g. 100, 1, 0.5">
+        </div>
+        <div>
+          <label>Unit</label>
+          <select id="unit" name="unit">
+            <option value="">-- Select --</option>
+            {% for unit_option in unit_options %}
+              <option value="{{ unit_option }}" {% if product.structured_unit==unit_option or product.unit_of_measurement==unit_option %}selected{% endif %}>{{ unit_option }}</option>
+            {% endfor %}
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <div class="section" id="selling_options_section">
+      <h3>Selling Options</h3>
+
+      <div class="form-grid grid-2">
+        <div>
+          <label>Storefront Availability</label>
+          <select name="availability_override">
+            <option value="AUTO" {% if (product.availability_override or 'AUTO') == 'AUTO' %}selected{% endif %}>Auto from stock ledger</option>
+            <option value="FORCE_UNAVAILABLE" {% if product.availability_override == 'FORCE_UNAVAILABLE' %}selected{% endif %}>Force unavailable</option>
+            <option value="FORCE_AVAILABLE" {% if product.availability_override == 'FORCE_AVAILABLE' %}selected{% endif %}>Force available (bypass receipt/stock check — e.g. cut-from-whole)</option>
+          </select>
+          <div class="help">Use force unavailable only for exceptions. Auto follows summed WI_LGR stock.</div>
+        </div>
+        <div>
+          <label>Alpha Test Visibility</label>
+          <select name="alpha_override">
+            <option value="AUTO" {% if (product.alpha_override or 'AUTO') == 'AUTO' %}selected{% endif %}>Auto (top sellers in FMCG)</option>
+            <option value="FORCE_INCLUDE" {% if product.alpha_override == 'FORCE_INCLUDE' %}selected{% endif %}>Force include</option>
+            <option value="FORCE_EXCLUDE" {% if product.alpha_override == 'FORCE_EXCLUDE' %}selected{% endif %}>Force exclude</option>
+          </select>
+          <div class="help">When alpha mode is on, only items with alpha visibility appear to customers. Auto picks top sellers automatically.</div>
+        </div>
       </div>
 
-      <div style="flex:1;min-width:220px">
-        <label>Storefront Availability</label>
-        <select name="availability_override">
-          <option value="AUTO" {% if (product.availability_override or 'AUTO') == 'AUTO' %}selected{% endif %}>Auto from stock ledger</option>
-          <option value="FORCE_UNAVAILABLE" {% if product.availability_override == 'FORCE_UNAVAILABLE' %}selected{% endif %}>Force unavailable</option>
-        </select>
-        <div style="margin-top:6px;color:#666;font-size:12px">Use force unavailable only for exceptions. Auto follows summed WI_LGR stock.</div>
+      <div class="option-block">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <div><span class="option-tag always">Option 1</span> <b style="margin-left:6px">Base / Piece</b></div>
+          <div class="price-readout {% if product.price_retail is none %}empty{% endif %}">
+            {% if product.price_retail is not none %}₱{{ "%.2f"|format(product.price_retail) }}{% else %}no retail price{% endif %}
+          </div>
+        </div>
+        <div class="form-grid grid-2" style="margin-top:10px">
+          <div>
+            <label>Primary Barcode</label>
+            <input type="text" name="primary_barcode" value="{{ product.primary_barcode or '' }}" placeholder="e.g. 4800000000000">
+            <div class="help">Scanned at checkout for the single piece sale.</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="option-block" id="pack_option_block">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <div><span class="option-tag optional">Option 2</span> <b style="margin-left:6px">Pack / Box</b></div>
+          <div class="price-readout {% if not has_pack_pricing %}empty{% endif %}">
+            {% if has_pack_pricing %}₱{{ "%.2f"|format(product.price_pack) }}{% else %}no pack price in MP_MER{% endif %}
+          </div>
+        </div>
+
         <div style="margin-top:10px">
-          <label style="display:flex;align-items:center;gap:8px;font-weight:700">
-            <input type="checkbox" name="show_pack_on_storefront" value="1" {% if product.show_pack_on_storefront %}checked{% endif %}>
+          <label style="display:flex;align-items:center;gap:8px;font-weight:700;cursor:pointer">
+            <input type="checkbox" id="show_pack_on_storefront" name="show_pack_on_storefront" value="1" {% if product.show_pack_on_storefront %}checked{% endif %} {% if not has_pack_pricing %}disabled{% endif %} style="width:18px;height:18px;cursor:pointer">
             Show pack / box price on storefront
           </label>
-          <div style="margin-top:6px;color:#666;font-size:12px">Only use when MP_MER pack pricing is customer-facing and should appear beside the base unit price.</div>
+          <div class="help">
+            {% if has_pack_pricing %}
+              Renders a second selling option on the product page beside the base unit price.
+            {% else %}
+              Disabled because MP_MER has no pack price for this product. Run the MP_MER sync if a pack price was recently added at HQ.
+            {% endif %}
+          </div>
         </div>
-        <div style="margin-top:10px">
-          <label>Pack display label</label>
-          <input type="text" name="pack_display_label" value="{{ product.pack_display_label or '' }}" placeholder="e.g. Box of 10">
-          <div style="margin-top:6px;color:#666;font-size:12px">Optional storefront label for the alternate pack, box, or bundle.</div>
-        </div>
-        <div style="margin-top:10px">
-          <label>Pack photo URL</label>
-          <input type="text" name="pack_photo_url" value="{{ product.pack_photo_url or '' }}" placeholder="https://... or leave blank">
-          <div style="margin-top:6px;color:#666;font-size:12px">Optional alternate image to use when highlighting the pack / box offer.</div>
-        </div>
-        <div style="margin-top:10px">
-          <label>Pack barcode</label>
-          <input type="text" name="pack_barcode" value="{{ product.pack_barcode or '' }}" placeholder="alternate barcode for the pack / box">
-          <div style="margin-top:6px;color:#666;font-size:12px">Attach the best alternate barcode for the pack / box version shown with the pack price.</div>
+
+        <div class="pack-fields {% if not product.show_pack_on_storefront %}is-collapsed{% endif %}" id="pack_fields">
+          <div class="form-grid grid-2">
+            <div>
+              <label>Pack display label</label>
+              <input type="text" name="pack_display_label" value="{{ product.pack_display_label or '' }}" placeholder="e.g. Box of 10">
+              <div class="help">Shown on the storefront beside the pack price.</div>
+            </div>
+            <div>
+              <label>Pack barcode</label>
+              <input type="text" name="pack_barcode" value="{{ product.pack_barcode or '' }}" placeholder="alternate barcode for the pack / box">
+              <div class="help">Scanned at checkout for the pack sale. Auto-filled from MP_MER SUSTK2/SUSTK1 when available.</div>
+            </div>
+          </div>
+
+          <div class="form-grid grid-2" style="margin-top:12px">
+            <div>
+              <label>Pack photo URL</label>
+              <input type="text" name="pack_photo_url" value="{{ product.pack_photo_url or '' }}" placeholder="https://... or use uploader →">
+              <div class="help">Filled automatically when you upload via the controls on the right. You may also paste a URL manually.</div>
+
+              <div class="pack-upload-controls">
+                <div style="font-weight:800;font-size:13px;color:#444">Upload pack image</div>
+                <div>
+                  <label class="field">Choose from phone album / files</label>
+                  <input type="file" name="pack_photo" accept="image/*" form="pack_uploader_form">
+                </div>
+                <div>
+                  <label class="field">Take photo now (optional)</label>
+                  <input type="file" name="pack_camera_photo" accept="image/*" capture="environment" form="pack_uploader_form">
+                </div>
+                <label style="display:flex;align-items:center;gap:8px;font-weight:700">
+                  <input type="checkbox" name="apply_white_bg" value="1" form="pack_uploader_form">
+                  Apply White BG processing (optional)
+                </label>
+                <div>
+                  <button type="submit" class="btn btn-primary" form="pack_uploader_form">Upload Pack Photo to S3</button>
+                </div>
+                <div class="help">
+                  Submitting this saves the new URL into <b>Pack photo URL</b> immediately — no need to click <i>Save Changes</i> afterwards. Filename uses pack barcode when available, else <code>{primary_barcode}-pack</code>.
+                </div>
+              </div>
+            </div>
+            <div>
+              <label>Current pack image</label>
+              <div class="pack-thumb">
+                {% if product.pack_photo_url %}
+                  <img src="{{ product.pack_photo_url }}" alt="Pack image">
+                {% else %}
+                  <span>none</span>
+                {% endif %}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div style="flex:1;min-width:220px">
-        <label>Department</label>
-        <select id="department_id" name="department_id">
-          <option value="">-- Select --</option>
-          {% for d in departments %}
-            <option value="{{ d.id }}" {% if product.department_id==d.id %}selected{% endif %}>{{ d.name }}</option>
-          {% endfor %}
-        </select>
-        <div style="margin-top:6px;color:#666;font-size:12px">Category choices are filtered by Department.</div>
-      </div>
+      <div class="option-block" id="case_option_block">
+        <div class="row" style="justify-content:space-between;align-items:center">
+          <div><span class="option-tag optional">Option 3</span> <b style="margin-left:6px">Case / Sack</b></div>
+          <div class="price-readout {% if not has_case_pricing %}empty{% endif %}">
+            {% if has_case_pricing %}₱{{ "%.2f"|format(product.price_case) }}{% else %}no case price in MP_MER{% endif %}
+          </div>
+        </div>
 
-      <div style="flex:1;min-width:220px">
-        <label>Category *</label>
-        <select id="category_id" name="category_id">
-          <option value="">-- Select --</option>
-          {% for c in categories %}
-            <option value="{{ c.id }}" data-department-id="{{ c.department_id or '' }}" {% if product.category_id==c.id %}selected{% endif %}>{{ c.name }}</option>
-          {% endfor %}
-        </select>
-      </div>
-
-      <div style="flex:1;min-width:220px">
-        <label>Size *</label>
-        <input type="text" id="size" name="size" value="{{ product.size or '' }}" placeholder="e.g. 600g, 1L, 2 pcs">
-        <div style="margin-top:8px">
-          <label style="display:flex;align-items:center;gap:8px;font-weight:700">
-            <input type="checkbox" id="auto_generate_size" name="auto_generate_size" value="1" {% if product.auto_generate_size_default %}checked{% endif %}>
-            Auto-generate from Numeric Size + Unit
+        <div style="margin-top:10px">
+          <label style="display:flex;align-items:center;gap:8px;font-weight:700;cursor:pointer">
+            <input type="checkbox" id="show_case_on_storefront" name="show_case_on_storefront" value="1" {% if product.show_case_on_storefront %}checked{% endif %} {% if not has_case_pricing %}disabled{% endif %} style="width:18px;height:18px;cursor:pointer">
+            Show case / sack price on storefront
           </label>
+          <div class="help">
+            {% if has_case_pricing %}
+              Renders a third selling option on the product page (e.g. a whole sack) priced from SRP Model 3 (Case).
+            {% else %}
+              Disabled because MP_MER has no case price for this product. Run the MP_MER sync if a case/sack price was recently added at HQ.
+            {% endif %}
+          </div>
         </div>
-      </div>
 
-      <div style="flex:1;min-width:220px">
-        <label>Numeric Size</label>
-        <input type="number" step="0.001" id="weight_volume" name="weight_volume" value="{{ product.structured_weight_value or product.weight_volume or '' }}" placeholder="e.g. 100, 1, 0.5">
-      </div>
-
-      <div style="flex:1;min-width:220px">
-        <label>Unit</label>
-        <select id="unit" name="unit">
-          <option value="">-- Select --</option>
-          {% for unit_option in unit_options %}
-            <option value="{{ unit_option }}" {% if product.structured_unit==unit_option or product.unit_of_measurement==unit_option %}selected{% endif %}>{{ unit_option }}</option>
-          {% endfor %}
-        </select>
+        <div class="pack-fields {% if not product.show_case_on_storefront %}is-collapsed{% endif %}" id="case_fields">
+          <div class="form-grid grid-2">
+            <div>
+              <label>Case display label</label>
+              <input type="text" name="case_display_label" value="{{ product.case_display_label or '' }}" placeholder="e.g. 1 Sack (50kg)">
+              <div class="help">Shown on the storefront beside the case price.</div>
+            </div>
+            <div>
+              <label>Case barcode</label>
+              <input type="text" name="case_barcode" value="{{ product.case_barcode or '' }}" placeholder="alternate barcode for the case / sack">
+              <div class="help">Scanned at checkout for the case / sack sale.</div>
+            </div>
+          </div>
+          <div class="form-grid grid-2" style="margin-top:12px">
+            <div>
+              <label>Units per case</label>
+              <input type="number" name="case_quantity" min="0" step="1" value="{{ product.case_quantity or '' }}" placeholder="e.g. 50">
+              <div class="help">How many base units the case contains (e.g. 50 for a 50kg sack of 1kg units). Used to show "Contains 50 × 1kg".</div>
+            </div>
+            <div>
+              <label>Case photo URL</label>
+              <input type="text" name="case_photo_url" value="{{ product.case_photo_url or '' }}" placeholder="https://... (optional)">
+              <div class="help">Optional. Falls back to the main product photo if left blank.</div>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 
-    <div class="row" style="gap:14px;margin-top:12px">
-      <div style="flex:1">
-        <label>Notes</label>
-        <input type="text" name="notes" value="">
+    <div class="section">
+      <h3>Notes</h3>
+      <div class="form-grid grid-2">
+        <div style="grid-column:1 / -1">
+          <input type="text" name="notes" value="" placeholder="Optional note recorded with this save in the audit log">
+        </div>
       </div>
     </div>
 
@@ -248,6 +429,7 @@
     </div>
   </form>
 </div>
+
 <script>
   (function () {
     const description = document.getElementById("description");
@@ -260,6 +442,45 @@
     const unit = document.getElementById("unit");
     const categorySelect = document.getElementById("category_id");
     const departmentSelect = document.getElementById("department_id");
+    const showPack = document.getElementById("show_pack_on_storefront");
+    const packFields = document.getElementById("pack_fields");
+    const packNudge = document.getElementById("pack_nudge_btn");
+    const sellingSection = document.getElementById("selling_options_section");
+
+    if (packNudge && sellingSection) {
+      packNudge.addEventListener("click", function () {
+        sellingSection.scrollIntoView({behavior: "smooth", block: "start"});
+        if (showPack && !showPack.disabled) {
+          showPack.focus();
+        }
+      });
+    }
+
+    const showCase = document.getElementById("show_case_on_storefront");
+    const caseFields = document.getElementById("case_fields");
+    if (showCase && caseFields) {
+      function syncCaseFields() {
+        if (showCase.checked) {
+          caseFields.classList.remove("is-collapsed");
+        } else {
+          caseFields.classList.add("is-collapsed");
+        }
+      }
+      showCase.addEventListener("change", syncCaseFields);
+      syncCaseFields();
+    }
+
+    if (showPack && packFields) {
+      function syncPackFields() {
+        if (showPack.checked) {
+          packFields.classList.remove("is-collapsed");
+        } else {
+          packFields.classList.add("is-collapsed");
+        }
+      }
+      showPack.addEventListener("change", syncPackFields);
+      syncPackFields();
+    }
 
     if (!description || !autoFill || !brand || !name || !size || !autoGenerateSize || !weightVolume || !unit || !categorySelect || !departmentSelect) {
       return;
@@ -372,4 +593,3 @@
   })();
 </script>
 {% endblock %}
-

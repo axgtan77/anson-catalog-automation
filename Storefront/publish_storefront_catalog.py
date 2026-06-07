@@ -30,14 +30,19 @@ SALES_LOOKBACK_DAYS = 730
 MIN_VEGETABLE_SALES_SAMPLES = 8
 MIN_MEAT_SALES_SAMPLES = 8
 MAX_MEAT_FE_T_FILES = 12
-DEFAULT_FRESH_ACCEPTANCE_DAYS = 14
+DEFAULT_FRESH_ACCEPTANCE_DAYS = 21
+# How many days back a delivery/acceptance receipt counts as "still stocked" for a
+# fresh SKU. Widened 2026-06-07: the previous tight windows silently dropped fresh
+# items (e.g. chicken drumsticks/thighs) that the store carries but hadn't received
+# in the last few days, so pickers couldn't find them. Meat/poultry/fish are largely
+# frozen and keep for weeks; produce stays tighter since it spoils faster.
 FRESH_ACCEPTANCE_WINDOWS = {
-    'ES.FM.POULTRY': 7,
-    'ES.MP.FISH': 7,
-    'ES.AP.VEGETABLES': 10,
-    'ES.AP.FRUITS': 10,
-    'ES.FM.BEEF': 14,
-    'ES.FM.PORK': 14,
+    'ES.FM.POULTRY': 30,
+    'ES.MP.FISH': 21,
+    'ES.AP.VEGETABLES': 14,
+    'ES.AP.FRUITS': 14,
+    'ES.FM.BEEF': 30,
+    'ES.FM.PORK': 30,
 }
 PLACEHOLDER_IMAGE = (
     'https://s3-ap-southeast-1.amazonaws.com/ansonsupermart.com/images/'
@@ -48,6 +53,32 @@ QUALITY_GATE_MIN_PRICE = 0.01
 QUALITY_GATE_MAX_PRICE = 50000
 SALES_RECENCY_DAYS = 365
 INVALID_DEPARTMENTS = {'UNCATEGORIZED', 'UNKNOWN', 'OTHERS', 'NONE', ''}
+
+# Alpha-visible curation: hybrid auto-by-velocity + manual override.
+# Auto-include the top N by 24-month transaction count among products that:
+#   - belong to a homepage-headline department (FMCG-leaning),
+#   - are NOT in an excluded class (bags, cigarettes, lighters),
+#   - have a real photo (not the placeholder),
+#   - are not currently out of stock.
+# Encoder products.alpha_override values: 'AUTO' (default), 'FORCE_INCLUDE', 'FORCE_EXCLUDE'.
+ALPHA_AUTO_TOP_N = 300
+ALPHA_HEADLINE_DEPARTMENT_NAMES = {
+    'Fresh', 'Pantry Supplies', 'Dairy & Eggs', 'Beverages', 'Bread & Bakery',
+    'Snacks', 'Frozen Goods', 'Personal Care', 'Baby & Kids', 'Home Care',
+    'Ready-To-Eat',
+}
+ALPHA_EXCLUDED_L3_CLASSES = {
+    'NE.MS.PLASTIC PRODUCTS',     # sandobags / shopping bags
+    'NE.CW.CIGARETTES',
+    'NE.CW.LIGHTER & FLUIDS',
+}
+# Departments suppressed from the storefront entirely. Items in these depts are
+# not published to storefront_catalog.db, so they don't appear in browse,
+# search, or homepage tiles. Keep them in the encoder for inventory/price work.
+STOREFRONT_EXCLUDED_DEPARTMENTS = {
+    'Cigarettes',
+    'Liquor',
+}
 
 GRAM_PATTERN = re.compile(r"\b(\d+(?:\.\d+)?)\s*(KG|G)\b", re.I)
 PIECE_SIZE_PATTERN = re.compile(r"^\s*(\d+)\s*S\s*$", re.I)
@@ -98,10 +129,18 @@ def ensure_schema(target_conn: sqlite3.Connection) -> None:
         'display_price': 'ALTER TABLE products ADD COLUMN display_price REAL',
         'range_label': 'ALTER TABLE products ADD COLUMN range_label TEXT',
         'stock_status': "ALTER TABLE products ADD COLUMN stock_status TEXT NOT NULL DEFAULT 'in_stock'",
+        'pack_quantity': 'ALTER TABLE products ADD COLUMN pack_quantity INTEGER',
         'show_pack_on_storefront': 'ALTER TABLE products ADD COLUMN show_pack_on_storefront INTEGER NOT NULL DEFAULT 0',
+        'default_selling_option': "ALTER TABLE products ADD COLUMN default_selling_option TEXT NOT NULL DEFAULT 'retail'",
         'pack_display_label': 'ALTER TABLE products ADD COLUMN pack_display_label TEXT',
         'pack_photo_url': 'ALTER TABLE products ADD COLUMN pack_photo_url TEXT',
         'pack_barcode': 'ALTER TABLE products ADD COLUMN pack_barcode TEXT',
+        'show_case_on_storefront': 'ALTER TABLE products ADD COLUMN show_case_on_storefront INTEGER NOT NULL DEFAULT 0',
+        'case_display_label': 'ALTER TABLE products ADD COLUMN case_display_label TEXT',
+        'case_barcode': 'ALTER TABLE products ADD COLUMN case_barcode TEXT',
+        'case_quantity': 'ALTER TABLE products ADD COLUMN case_quantity INTEGER',
+        'case_photo_url': 'ALTER TABLE products ADD COLUMN case_photo_url TEXT',
+        'alpha_visible': 'ALTER TABLE products ADD COLUMN alpha_visible INTEGER NOT NULL DEFAULT 0',
     }
     for column_name, statement in required_columns.items():
         if column_name not in existing_columns:
@@ -118,12 +157,26 @@ def ensure_source_schema(source_conn: sqlite3.Connection) -> None:
         source_conn.execute("ALTER TABLE products ADD COLUMN availability_override TEXT DEFAULT 'AUTO'")
     if 'show_pack_on_storefront' not in existing_columns:
         source_conn.execute("ALTER TABLE products ADD COLUMN show_pack_on_storefront INTEGER DEFAULT 0")
+    if 'default_selling_option' not in existing_columns:
+        source_conn.execute("ALTER TABLE products ADD COLUMN default_selling_option TEXT DEFAULT 'retail'")
     if 'pack_display_label' not in existing_columns:
         source_conn.execute("ALTER TABLE products ADD COLUMN pack_display_label TEXT")
     if 'pack_photo_url' not in existing_columns:
         source_conn.execute("ALTER TABLE products ADD COLUMN pack_photo_url TEXT")
     if 'pack_barcode' not in existing_columns:
         source_conn.execute("ALTER TABLE products ADD COLUMN pack_barcode TEXT")
+    if 'show_case_on_storefront' not in existing_columns:
+        source_conn.execute("ALTER TABLE products ADD COLUMN show_case_on_storefront INTEGER DEFAULT 0")
+    if 'case_display_label' not in existing_columns:
+        source_conn.execute("ALTER TABLE products ADD COLUMN case_display_label TEXT")
+    if 'case_barcode' not in existing_columns:
+        source_conn.execute("ALTER TABLE products ADD COLUMN case_barcode TEXT")
+    if 'case_quantity' not in existing_columns:
+        source_conn.execute("ALTER TABLE products ADD COLUMN case_quantity INTEGER")
+    if 'case_photo_url' not in existing_columns:
+        source_conn.execute("ALTER TABLE products ADD COLUMN case_photo_url TEXT")
+    if 'alpha_override' not in existing_columns:
+        source_conn.execute("ALTER TABLE products ADD COLUMN alpha_override TEXT DEFAULT 'AUTO'")
     source_conn.commit()
 
 
@@ -391,6 +444,39 @@ def determine_fulfillment_profile(
         'substitution_policy': 'standard',
         'fulfillment_note': 'Sold using the published shelf price.',
     }
+
+
+def compute_alpha_visible(meta: list[dict]) -> dict[str, int]:
+    """Hybrid alpha eligibility: auto-include top-N by velocity within
+    headline FMCG departments, then honor manual override (FORCE_INCLUDE /
+    FORCE_EXCLUDE / AUTO). Returns {merkey: 0 or 1}."""
+    auto_candidates: list[tuple[str, float]] = []
+    for entry in meta:
+        if entry['dept_name'] not in ALPHA_HEADLINE_DEPARTMENT_NAMES:
+            continue
+        if entry['class_l3'] in ALPHA_EXCLUDED_L3_CLASSES:
+            continue
+        if not entry['photo_url'] or entry['photo_url'] == PLACEHOLDER_IMAGE:
+            continue
+        if entry['stock_status'] == 'out_of_stock':
+            continue
+        if entry['txn_count_24m'] <= 0:
+            continue
+        auto_candidates.append((entry['merkey'], entry['txn_count_24m']))
+    auto_candidates.sort(key=lambda pair: pair[1], reverse=True)
+    auto_set = {merkey for merkey, _ in auto_candidates[:ALPHA_AUTO_TOP_N]}
+
+    visible: dict[str, int] = {}
+    for entry in meta:
+        merkey = entry['merkey']
+        override = entry['override']
+        if override == 'FORCE_EXCLUDE':
+            visible[merkey] = 0
+        elif override == 'FORCE_INCLUDE':
+            visible[merkey] = 1
+        else:
+            visible[merkey] = 1 if merkey in auto_set else 0
+    return visible
 
 
 def has_inventory_snapshot(source_conn: sqlite3.Connection) -> bool:
@@ -947,10 +1033,17 @@ def fetch_source_rows(source_conn: sqlite3.Connection) -> list[sqlite3.Row]:
         p.class_l2_name,
         p.class_l3_name,
         p.availability_override,
+        COALESCE(p.alpha_override, 'AUTO') AS alpha_override,
         COALESCE(p.show_pack_on_storefront, 0) AS show_pack_on_storefront,
+        LOWER(COALESCE(NULLIF(TRIM(p.default_selling_option), ''), 'retail')) AS default_selling_option,
         p.pack_display_label,
         p.pack_photo_url,
         p.pack_barcode,
+        COALESCE(p.show_case_on_storefront, 0) AS show_case_on_storefront,
+        p.case_display_label,
+        p.case_barcode,
+        p.case_quantity,
+        p.case_photo_url,
         d.id AS department_id,
         d.name AS department_name,
         c.id AS category_id,
@@ -1018,6 +1111,7 @@ def rebuild_catalog(
     departments: dict[int, dict[str, object]] = {}
     categories: dict[int, dict[str, object]] = {}
     product_rows: list[tuple] = []
+    product_alpha_meta: list[dict] = []
     department_lookup: dict[str, int] = {}
     category_lookup: dict[tuple[str, str], int] = {}
     next_category_id = 1
@@ -1042,17 +1136,43 @@ def rebuild_catalog(
     for row in rows:
         if is_masked_storefront_item(row) or is_unusual_storefront_item(row):
             continue
+        if (row['department_name'] or '').strip() in STOREFRONT_EXCLUDED_DEPARTMENTS:
+            continue
         avail_override = (row['availability_override'] or 'AUTO').strip().upper()
         stock_qty = float(row['quantity_on_hand'] or 0)
         reorder_point = float(row['reorder_point'] or 0)
         if avail_override == 'FORCE_UNAVAILABLE':
             continue
+        # FORCE_AVAILABLE: staff assert the item is sellable regardless of its own
+        # receipt/inventory records. Used for items butchered/produced from a parent
+        # delivery (e.g. chicken "Cut-Ups" carved from whole chickens) that never get
+        # their own acceptance record. Bypasses the fresh-acceptance recency gate below
+        # and forces in_stock.
+        force_available = avail_override == 'FORCE_AVAILABLE'
+
+        # In-house produced items (e.g. Bread Garden bakery) have no incoming
+        # receipts in WI_LGR, so the ledger goes negative even though they're
+        # baked daily. Trust recent sales as a stock signal: if it sold in the
+        # last 7 days AND the ledger says <= 0, treat as in_stock.
+        last_sale_iso = (row['last_sale_date'] or '').strip()
+        sold_recently = False
+        if last_sale_iso:
+            try:
+                sold_recently = (date.today() - date.fromisoformat(last_sale_iso)).days <= 7
+            except ValueError:
+                pass
 
         if inventory_enabled and stock_qty <= 0:
-            stock_status = 'out_of_stock'
+            if sold_recently:
+                stock_status = 'in_stock'  # in-house production override
+            else:
+                stock_status = 'out_of_stock'
         elif inventory_enabled and reorder_point > 0 and stock_qty <= reorder_point:
             stock_status = 'low_stock'
         else:
+            stock_status = 'in_stock'
+
+        if force_available:
             stock_status = 'in_stock'
 
         fresh_display = classify_fresh_display(
@@ -1065,7 +1185,7 @@ def rebuild_catalog(
             acceptance_dates.get(row['merkey']),
             delivery_dates.get(row['merkey']),
         )
-        if fresh_display and not has_recent_acceptance(
+        if fresh_display and not force_available and not has_recent_acceptance(
             last_acceptance_date,
             max_fresh_signal_date,
             get_fresh_acceptance_window_days(row, fresh_acceptance_days),
@@ -1129,7 +1249,7 @@ def rebuild_catalog(
             row['merkey'], slug, display_name, brand_name, row['description'], row['size'],
             dept_id, dept_name, dept_slug,
             category_id, category_name, category_slug,
-            row['price_retail'], row['price_pack'], row['price_case'], row['show_pack_on_storefront'], row['pack_display_label'], row['pack_photo_url'], row['pack_barcode'], row['photo_url'], row['data_quality'],
+            row['price_retail'], row['price_pack'], row['price_case'], row['pack_quantity'], row['show_pack_on_storefront'], row['default_selling_option'], row['pack_display_label'], row['pack_photo_url'], row['pack_barcode'], row['show_case_on_storefront'], row['case_display_label'], row['case_barcode'], row['case_quantity'], row['case_photo_url'], row['photo_url'], row['data_quality'],
             row['supplier_name'], row['class_l1_name'], row['class_l2_name'], row['class_l3_name'],
             row['barcode'], row['all_barcodes'], row['txn_count_24m'], row['qty_sum_24m'],
             row['last_sale_date'], row['priority'], last_acceptance_date,
@@ -1149,6 +1269,21 @@ def rebuild_catalog(
             row['needs_irl_photo'],
             stock_status,
         ))
+        product_alpha_meta.append({
+            'merkey': row['merkey'],
+            'dept_name': dept_name,
+            'class_l3': (row['class_l3_name'] or '').strip(),
+            'photo_url': (row['photo_url'] or '').strip(),
+            'txn_count_24m': float(row['txn_count_24m'] or 0),
+            'stock_status': stock_status,
+            'override': (row['alpha_override'] or 'AUTO').strip().upper(),
+        })
+
+    alpha_visible_by_merkey = compute_alpha_visible(product_alpha_meta)
+    product_rows = [
+        row + (alpha_visible_by_merkey.get(row[0], 0),)
+        for row in product_rows
+    ]
 
     with target_conn:
         target_conn.execute('DELETE FROM departments')
@@ -1168,13 +1303,13 @@ def rebuild_catalog(
                 merkey, slug, name, brand, description, size,
                 department_id, department_name, department_slug,
                 category_id, category_name, category_slug,
-                price_retail, price_pack, price_case, show_pack_on_storefront, pack_display_label, pack_photo_url, pack_barcode, photo_url, status,
+                price_retail, price_pack, price_case, pack_quantity, show_pack_on_storefront, default_selling_option, pack_display_label, pack_photo_url, pack_barcode, show_case_on_storefront, case_display_label, case_barcode, case_quantity, case_photo_url, photo_url, status,
                 supplier_name, class_l1_name, class_l2_name, class_l3_name,
                 barcode, all_barcodes, txn_count_24m, qty_sum_24m,
                 last_sale_date, priority, last_acceptance_date, sellable_state, sellable_note, fulfillment_type, order_unit_label, substitution_policy, fulfillment_note, pricing_basis, min_weight_g, max_weight_g,
-                display_weight_g, display_price, range_label, active, search_text, needs_irl_photo, stock_status
+                display_weight_g, display_price, range_label, active, search_text, needs_irl_photo, stock_status, alpha_visible
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             product_rows,
         )

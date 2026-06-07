@@ -3,13 +3,15 @@ from __future__ import annotations
 import os
 import sqlite3
 import hmac
+import secrets
 from datetime import datetime
 from pathlib import Path
-from urllib.parse import urlencode
+from urllib.parse import urlencode, quote
 from functools import wraps
 
-from flask import Flask, abort, flash, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, abort, flash, jsonify, redirect, render_template, request, send_from_directory, session, url_for
 from werkzeug.security import generate_password_hash, check_password_hash
+from werkzeug.utils import secure_filename
 
 BASE_DIR = Path(__file__).resolve().parent
 STORE_DB_PATH = Path(os.environ.get('ANSON_STOREFRONT_DB', str(BASE_DIR / 'storefront_catalog.db')))
@@ -42,6 +44,18 @@ PRICE_BANDS = {
 
 FRESH_CLASS_HINTS = {'ES.FM.PORK', 'ES.FM.BEEF', 'ES.FM.POULTRY', 'ES.MP.FISH', 'ES.AP.VEGETABLES', 'ES.AP.FRUITS'}
 FRESH_DEPARTMENT_SLUGS = {'fresh'}
+# Homepage tile eligibility: always exclude non-FMCG departments and bag/cigarette
+# classes from "Best Sellers", "Fresh Picks" etc. so Sandobag and Marlboro never
+# headline the page even though they sell well.
+HOMEPAGE_TILE_DEPARTMENT_SLUGS = (
+    'fresh', 'pantry-supplies', 'dairy-eggs', 'beverages', 'bread-bakery',
+    'snacks', 'frozen-goods', 'personal-care', 'baby-kids', 'home-care',
+    'ready-to-eat',
+)
+HOMEPAGE_TILE_EXCLUDED_L3 = (
+    'NE.MS.PLASTIC PRODUCTS', 'NE.CW.CIGARETTES', 'NE.CW.LIGHTER & FLUIDS',
+)
+STOREFRONT_ALPHA_MODE = os.environ.get('STOREFRONT_ALPHA_MODE', '0').strip().lower() in {'1', 'true', 'yes', 'y'}
 DISPLAY_PRICE_SQL = 'COALESCE(display_price, price_retail, 0)'
 HOMEPAGE_SPOTLIGHT_ROW_SIZE = 5
 RELATED_PRODUCTS_ROW_SIZE = 5
@@ -51,17 +65,52 @@ PRODUCT_GRID_ROWS_PER_PAGE = 7
 PRODUCT_GRID_PAGE_SIZE = PRODUCT_GRID_ROW_SIZE * PRODUCT_GRID_ROWS_PER_PAGE
 PLACEHOLDER_PHOTO = '/static/ANSON-ONLINE-GROCERY-PLACEHOLDER.jpg'
 CART_SESSION_KEY = 'storefront_cart'
-ORDER_STATUS_OPTIONS = ['NEW', 'REVIEWING', 'CONFIRMED', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'COMPLETED', 'CANCELLED', 'FULFILLED']
+EDITING_REQUEST_KEY = 'storefront_editing_request'
+NOTIFICATIONS_WEBHOOK_URL = os.environ.get('STOREFRONT_NOTIFICATIONS_WEBHOOK', '').strip()
+NOTIFICATIONS_PUBLIC_BASE = os.environ.get('STOREFRONT_PUBLIC_BASE', '').strip().rstrip('/')
+# Discord webhook messages don't push to phones unless they actively mention someone.
+# Prefix every order notification with this so it pings even on default "Only @mentions"
+# settings. Default '@here' pings online members; override with a user ('<@ID>') or
+# role ('<@&ID>') mention via the systemd drop-in. Set empty to disable mentions.
+NOTIFICATIONS_MENTION = os.environ.get('STOREFRONT_NOTIFICATIONS_MENTION', '@here').strip()
+PAYMENT_PROOF_UPLOAD_DIR = Path(os.environ.get('STOREFRONT_PAYMENT_PROOF_DIR', str(BASE_DIR / 'instance' / 'uploads' / 'payment_proofs')))
+PAYMENT_PROOF_ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf'}
+app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('STOREFRONT_MAX_UPLOAD_BYTES', str(6 * 1024 * 1024)))
+
+# Preferred simplified status model. Legacy status values remain accepted/mapped so old rows and links do not break.
+ORDER_STATUS_OPTIONS = ['NEW', 'REVIEWING', 'AWAITING_CUSTOMER_CONFIRMATION', 'FOR_RELEASE', 'RELEASED', 'CANCELLED']
+LEGACY_ORDER_STATUS_OPTIONS = ['CONFIRMED', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'COMPLETED', 'FULFILLED']
+ALL_ORDER_STATUS_OPTIONS = ORDER_STATUS_OPTIONS + LEGACY_ORDER_STATUS_OPTIONS
 ORDER_STATUS_LABELS = {
     'NEW': 'New',
     'REVIEWING': 'Reviewing',
-    'CONFIRMED': 'Confirmed',
-    'READY_FOR_PICKUP': 'Ready for Pickup',
-    'OUT_FOR_DELIVERY': 'Out for Delivery',
-    'COMPLETED': 'Completed',
+    'AWAITING_CUSTOMER_CONFIRMATION': 'Awaiting Customer Confirmation',
+    'CONFIRMED': 'Awaiting Payment',
+    'FOR_RELEASE': 'For Release',
+    'READY_FOR_PICKUP': 'For Release',
+    'OUT_FOR_DELIVERY': 'For Release',
+    'RELEASED': 'Released',
+    'COMPLETED': 'Released',
+    'FULFILLED': 'Released',
     'CANCELLED': 'Cancelled',
-    'FULFILLED': 'Fulfilled',
 }
+PAYMENT_STATUS_OPTIONS = ['UNPAID', 'PAYMENT_PENDING', 'PAYMENT_SUBMITTED', 'PAID', 'PAYMENT_REJECTED']
+PAYMENT_STATUS_LABELS = {
+    'UNPAID': 'Unpaid',
+    'PAYMENT_PENDING': 'Payment Pending',
+    'PAYMENT_SUBMITTED': 'Payment Submitted',
+    'PAID': 'Paid / Verified',
+    'PAYMENT_REJECTED': 'Payment Rejected',
+}
+# Treasury reference payment types include GCASH, CCARD, GSP, GRAB, ROYAL_R, GVOUCHER, CHECK, HOME, COMPANY.
+# Storefront exposes only customer-facing first-pass options.
+PAYMENT_METHOD_OPTIONS = [
+    ('GCASH', 'GCash'),
+    ('BANK_TRANSFER', 'Bank Transfer / QRPh'),
+    ('CCARD', 'Credit Card'),
+    ('CHECK', 'Check'),
+]
+PAYMENT_METHOD_LABELS = dict(PAYMENT_METHOD_OPTIONS)
 CURATED_TOP_DEPARTMENT_ORDER = [
     'fresh',
     'pantry-supplies',
@@ -118,6 +167,39 @@ def ensure_runtime_schema() -> None:
             conn.execute("ALTER TABLE order_requests ADD COLUMN confirmed_total REAL")
         if 'customer_confirmation_note' not in order_request_columns:
             conn.execute("ALTER TABLE order_requests ADD COLUMN customer_confirmation_note TEXT")
+        payment_columns = {
+            'payment_status': "TEXT NOT NULL DEFAULT 'UNPAID'",
+            'payment_method': 'TEXT',
+            'payment_reference': 'TEXT',
+            'payment_proof_path': 'TEXT',
+            'payment_amount': 'REAL',
+            'payment_submitted_at': 'TEXT',
+            'payment_verified_at': 'TEXT',
+            'payment_verified_by': 'TEXT',
+            'payment_verification_note': 'TEXT',
+        }
+        for column_name, column_def in payment_columns.items():
+            if column_name not in order_request_columns:
+                conn.execute(f"ALTER TABLE order_requests ADD COLUMN {column_name} {column_def}")
+        conn.execute("UPDATE order_requests SET payment_status = COALESCE(NULLIF(payment_status, ''), 'UNPAID')")
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS order_payments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                order_request_id INTEGER NOT NULL,
+                payment_method TEXT NOT NULL,
+                reference_number TEXT,
+                amount REAL,
+                proof_path TEXT,
+                status TEXT NOT NULL DEFAULT 'SUBMITTED',
+                customer_note TEXT,
+                staff_note TEXT,
+                submitted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                verified_at TEXT,
+                verified_by TEXT,
+                FOREIGN KEY(order_request_id) REFERENCES order_requests(id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_order_payments_order_request_id ON order_payments(order_request_id, submitted_at DESC);
+        """)
         order_item_columns = {
             row['name']
             for row in conn.execute("PRAGMA table_info(order_request_items)").fetchall()
@@ -130,12 +212,19 @@ def ensure_runtime_schema() -> None:
             conn.execute("ALTER TABLE order_request_items ADD COLUMN removed INTEGER NOT NULL DEFAULT 0")
         if 'removal_reason' not in order_item_columns:
             conn.execute("ALTER TABLE order_request_items ADD COLUMN removal_reason TEXT")
+        if 'selling_option_key' not in order_item_columns:
+            conn.execute("ALTER TABLE order_request_items ADD COLUMN selling_option_key TEXT NOT NULL DEFAULT 'retail'")
+        if 'selling_option_label' not in order_item_columns:
+            conn.execute("ALTER TABLE order_request_items ADD COLUMN selling_option_label TEXT")
+        if 'selling_option_barcode' not in order_item_columns:
+            conn.execute("ALTER TABLE order_request_items ADD COLUMN selling_option_barcode TEXT")
         conn.execute(
             """
             UPDATE order_request_items
             SET original_requested_qty = COALESCE(original_requested_qty, requested_qty),
                 original_quoted_price = COALESCE(original_quoted_price, quoted_price),
-                removed = COALESCE(removed, 0)
+                removed = COALESCE(removed, 0),
+                selling_option_key = COALESCE(NULLIF(selling_option_key, ''), 'retail')
             """
         )
         # --- Customer accounts migration ---
@@ -161,6 +250,12 @@ def ensure_runtime_schema() -> None:
         product_columns = {row['name'] for row in conn.execute("PRAGMA table_info(products)").fetchall()}
         if 'stock_status' not in product_columns:
             conn.execute("ALTER TABLE products ADD COLUMN stock_status TEXT NOT NULL DEFAULT 'in_stock'")
+        if 'alpha_visible' not in product_columns:
+            conn.execute("ALTER TABLE products ADD COLUMN alpha_visible INTEGER NOT NULL DEFAULT 0")
+        if 'default_selling_option' not in product_columns:
+            conn.execute("ALTER TABLE products ADD COLUMN default_selling_option TEXT NOT NULL DEFAULT 'retail'")
+        if 'pack_quantity' not in product_columns:
+            conn.execute("ALTER TABLE products ADD COLUMN pack_quantity INTEGER")
         conn.commit()
     finally:
         conn.close()
@@ -270,9 +365,60 @@ def prefilled_request_form_data() -> dict[str, str]:
     return base
 
 
+def canonical_order_status(status: str | None) -> str:
+    normalized = (status or '').strip().upper()
+    if normalized in {'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY'}:
+        return 'FOR_RELEASE'
+    if normalized in {'COMPLETED', 'FULFILLED'}:
+        return 'RELEASED'
+    if normalized == 'CONFIRMED':
+        return 'AWAITING_CUSTOMER_CONFIRMATION'
+    return normalized or 'NEW'
+
+
 def order_status_label(status: str | None) -> str:
     normalized = (status or '').strip().upper()
-    return ORDER_STATUS_LABELS.get(normalized, normalized.replace('_', ' ').title() or 'Unknown')
+    return ORDER_STATUS_LABELS.get(normalized, ORDER_STATUS_LABELS.get(canonical_order_status(normalized), normalized.replace('_', ' ').title() or 'Unknown'))
+
+
+def payment_status_label(status: str | None) -> str:
+    normalized = (status or '').strip().upper()
+    return PAYMENT_STATUS_LABELS.get(normalized, normalized.replace('_', ' ').title() or 'Unpaid')
+
+
+def payment_method_label(method: str | None) -> str:
+    normalized = (method or '').strip().upper()
+    return PAYMENT_METHOD_LABELS.get(normalized, normalized.replace('_', ' ').title() or 'Not selected')
+
+
+def allowed_payment_method(method: str | None) -> bool:
+    return (method or '').strip().upper() in PAYMENT_METHOD_LABELS
+
+
+def is_allowed_payment_proof(filename: str | None) -> bool:
+    if not filename or '.' not in filename:
+        return False
+    ext = filename.rsplit('.', 1)[1].lower()
+    return ext in PAYMENT_PROOF_ALLOWED_EXTENSIONS
+
+
+def save_payment_proof(file_storage) -> str | None:
+    if not file_storage or not getattr(file_storage, 'filename', ''):
+        return None
+    if not is_allowed_payment_proof(file_storage.filename):
+        raise ValueError('Payment proof must be an image or PDF file.')
+    PAYMENT_PROOF_UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
+    original = secure_filename(file_storage.filename)
+    ext = original.rsplit('.', 1)[1].lower() if '.' in original else 'dat'
+    filename = f"{datetime.now():%Y%m%d%H%M%S}-{secrets.token_urlsafe(12)}.{ext}"
+    file_storage.save(PAYMENT_PROOF_UPLOAD_DIR / filename)
+    return filename
+
+
+def customer_can_submit_payment(order_request: dict) -> bool:
+    status = canonical_order_status(order_request.get('status'))
+    payment_status = (order_request.get('payment_status') or 'UNPAID').strip().upper()
+    return status in {'AWAITING_CUSTOMER_CONFIRMATION', 'REVIEWING'} and payment_status in {'UNPAID', 'PAYMENT_PENDING', 'PAYMENT_REJECTED'}
 
 
 def customer_can_cancel(order_request: dict) -> bool:
@@ -291,15 +437,14 @@ def customer_can_delete(order_request: dict) -> bool:
 
 
 def next_fulfillment_stage(order_request: dict) -> tuple[str, str] | None:
-    status = (order_request.get('status') or '').strip().upper()
+    status = canonical_order_status(order_request.get('status'))
+    payment_status = (order_request.get('payment_status') or 'UNPAID').strip().upper()
     fulfillment_method = (order_request.get('fulfillment_method') or '').strip().lower()
-    if status == 'CONFIRMED':
-        if fulfillment_method == 'pickup':
-            return ('READY_FOR_PICKUP', 'Mark Ready for Pickup')
-        if fulfillment_method == 'delivery':
-            return ('OUT_FOR_DELIVERY', 'Mark Out for Delivery')
-    if status in {'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'FULFILLED'}:
-        return ('COMPLETED', 'Mark Completed')
+    if status == 'AWAITING_CUSTOMER_CONFIRMATION' and payment_status == 'PAID':
+        label = 'Mark For Pickup Release' if fulfillment_method == 'pickup' else 'Mark For Delivery Release'
+        return ('FOR_RELEASE', label)
+    if status == 'FOR_RELEASE' and payment_status == 'PAID':
+        return ('RELEASED', 'Mark Released')
     return None
 
 
@@ -307,20 +452,24 @@ def customer_status_message(order_request: dict, estimated_total: float) -> tupl
     status = (order_request.get('status') or '').strip().upper()
     confirmed_total = order_request.get('confirmed_total')
     total = confirmed_total if confirmed_total is not None else estimated_total
-    if status == 'READY_FOR_PICKUP':
+    canonical_status = canonical_order_status(status)
+    payment_status = (order_request.get('payment_status') or 'UNPAID').strip().upper()
+    if canonical_status == 'AWAITING_CUSTOMER_CONFIRMATION' and payment_status in {'UNPAID', 'PAYMENT_PENDING', 'PAYMENT_REJECTED'}:
         return (
-            'Order ready for pickup',
-            f"Your reviewed order is ready for pickup. Current total: P{total:,.2f}.",
+            'Payment needed',
+            f"Please confirm the reviewed total of P{total:,.2f} and submit your payment details below.",
         )
-    if status == 'OUT_FOR_DELIVERY':
+    if payment_status == 'PAYMENT_SUBMITTED':
+        return ('Payment submitted', 'Thanks — staff will verify your payment before release.')
+    if canonical_status == 'FOR_RELEASE':
         return (
-            'Order out for delivery',
-            f"Your reviewed order is now out for delivery. Current total: P{total:,.2f}.",
+            'Order ready for release',
+            f"Your payment is verified. Your order is ready for {order_request.get('fulfillment_method') or 'release'}.",
         )
-    if status in {'COMPLETED', 'FULFILLED'}:
+    if canonical_status == 'RELEASED':
         return (
-            'Order completed',
-            f"Your order has been completed. Final total: P{total:,.2f}.",
+            'Order released',
+            f"Your order has been released. Final total: P{total:,.2f}.",
         )
     return None
 
@@ -502,27 +651,147 @@ def fetch_last_publish_at() -> str | None:
         conn.close()
 
 
-def get_cart() -> dict[str, int]:
+def cart_line_key(merkey: str, option_key: str) -> str:
+    return f"{merkey}__{option_key or 'retail'}"
+
+
+def get_cart() -> dict[str, dict]:
     raw_cart = session.get(CART_SESSION_KEY, {})
     if not isinstance(raw_cart, dict):
         return {}
-    cart: dict[str, int] = {}
-    for merkey, qty in raw_cart.items():
+    cart: dict[str, dict] = {}
+    for key, value in raw_cart.items():
+        if isinstance(value, int):
+            try:
+                qty = max(1, int(value))
+            except (TypeError, ValueError):
+                continue
+            line_key = cart_line_key(str(key), 'retail')
+            cart[line_key] = {
+                'merkey': str(key),
+                'qty': qty,
+                'option_key': 'retail',
+                'label': 'Piece',
+                'price': None,
+                'barcode': None,
+                'photo_url': None,
+            }
+            continue
+        if not isinstance(value, dict):
+            continue
+        merkey = str(value.get('merkey') or '').strip()
+        if not merkey:
+            continue
         try:
-            normalized_qty = max(1, int(qty))
+            qty = max(1, int(value.get('qty') or 0))
         except (TypeError, ValueError):
             continue
-        cart[str(merkey)] = normalized_qty
+        option_key = (value.get('option_key') or 'retail').strip() or 'retail'
+        line_key = cart_line_key(merkey, option_key)
+        price_raw = value.get('price')
+        try:
+            price = float(price_raw) if price_raw is not None else None
+        except (TypeError, ValueError):
+            price = None
+        cart[line_key] = {
+            'merkey': merkey,
+            'qty': qty,
+            'option_key': option_key,
+            'label': (value.get('label') or '').strip() or ('Piece' if option_key == 'retail' else 'Pack / Box'),
+            'price': price,
+            'barcode': (value.get('barcode') or None),
+            'photo_url': (value.get('photo_url') or None),
+        }
     return cart
 
 
-def save_cart(cart: dict[str, int]) -> None:
+def save_cart(cart: dict[str, dict]) -> None:
     session[CART_SESSION_KEY] = cart
     session.modified = True
 
 
 def get_cart_count() -> int:
-    return sum(get_cart().values())
+    return sum(line.get('qty', 0) for line in get_cart().values())
+
+
+def get_editing_request_code() -> str | None:
+    code = session.get(EDITING_REQUEST_KEY)
+    return code if isinstance(code, str) and code else None
+
+
+def clear_editing_state() -> None:
+    if EDITING_REQUEST_KEY in session:
+        session.pop(EDITING_REQUEST_KEY, None)
+        session.modified = True
+
+
+def normalize_ph_phone(raw: str) -> str:
+    digits = ''.join(ch for ch in (raw or '') if ch.isdigit())
+    if not digits:
+        return ''
+    if digits.startswith('63') and len(digits) >= 12:
+        return '+' + digits
+    if digits.startswith('0') and len(digits) == 11:
+        return '+63' + digits[1:]
+    if digits.startswith('9') and len(digits) == 10:
+        return '+63' + digits
+    return '+' + digits
+
+
+def build_admin_contact_links(order_request: dict, customer_update_message: str) -> dict:
+    contact_number = (order_request.get('contact_number') or '').strip()
+    contact_email = (order_request.get('contact_email') or '').strip()
+    request_code = order_request.get('request_code') or ''
+    message = customer_update_message or ''
+    subject = f"{request_code} update" if request_code else 'Order update'
+    phone_intl = normalize_ph_phone(contact_number)
+    phone_digits = phone_intl.lstrip('+') if phone_intl else ''
+
+    links = {
+        'phone_display': contact_number,
+        'phone_intl': phone_intl,
+        'email': contact_email,
+        'mailto': (
+            f"mailto:{contact_email}?subject={quote(subject)}&body={quote(message)}"
+            if contact_email else ''
+        ),
+        'gmail_compose': (
+            'https://mail.google.com/mail/?'
+            + urlencode({'view': 'cm', 'fs': '1', 'to': contact_email, 'su': subject, 'body': message})
+            if contact_email else ''
+        ),
+        'outlook_compose': (
+            'https://outlook.office.com/mail/deeplink/compose?'
+            + urlencode({'to': contact_email, 'subject': subject, 'body': message})
+            if contact_email else ''
+        ),
+        'viber_chat': (
+            f"viber://chat?number={quote(phone_intl)}" if phone_intl else ''
+        ),
+        'viber_call': (
+            f"viber://contact?number={quote(phone_intl)}" if phone_intl else ''
+        ),
+        'whatsapp': (
+            f"https://wa.me/{phone_digits}?text={quote(message)}" if phone_digits else ''
+        ),
+    }
+    return links
+
+
+def get_editing_cart_url() -> str:
+    code = get_editing_request_code()
+    if code and session.get(ADMIN_SESSION_KEY):
+        return url_for('admin_edit_cart_page', request_code=code)
+    return url_for('cart_page')
+
+
+@app.context_processor
+def inject_editing_request_state():
+    editing_code = get_editing_request_code()
+    return {
+        'editing_request_code': editing_code,
+        'editing_cart_url': get_editing_cart_url() if editing_code else url_for('cart_page'),
+    }
 
 
 def wants_json_response() -> bool:
@@ -655,10 +924,20 @@ def build_product_dict(row: sqlite3.Row) -> dict:
     availability = build_availability(sellable_state, stock_status)
     fulfillment = build_fulfillment(row, availability, display_size)
     show_pack_price = bool(row['show_pack_on_storefront']) if 'show_pack_on_storefront' in row.keys() else False
+    default_selling_option = (row['default_selling_option'] or 'retail').strip().lower() if 'default_selling_option' in row.keys() else 'retail'
+    if default_selling_option not in {'retail', 'pack', 'case'}:
+        default_selling_option = 'retail'
     pack_price = row['price_pack'] if 'price_pack' in row.keys() else None
     pack_label = (row['pack_display_label'] or '').strip() if 'pack_display_label' in row.keys() else ''
+    pack_quantity = int(row['pack_quantity'] or 0) if 'pack_quantity' in row.keys() else 0
     pack_photo_url = (row['pack_photo_url'] or '').strip() if 'pack_photo_url' in row.keys() else ''
     pack_barcode = (row['pack_barcode'] or '').strip() if 'pack_barcode' in row.keys() else ''
+    show_case_price = bool(row['show_case_on_storefront']) if 'show_case_on_storefront' in row.keys() else False
+    case_price = row['price_case'] if 'price_case' in row.keys() else None
+    case_label = (row['case_display_label'] or '').strip() if 'case_display_label' in row.keys() else ''
+    case_quantity = int(row['case_quantity'] or 0) if 'case_quantity' in row.keys() else 0
+    case_photo_url = (row['case_photo_url'] or '').strip() if 'case_photo_url' in row.keys() else ''
+    case_barcode = (row['case_barcode'] or '').strip() if 'case_barcode' in row.keys() else ''
     selling_options = []
     if row['price_retail'] is not None:
         selling_options.append({
@@ -668,7 +947,7 @@ def build_product_dict(row: sqlite3.Row) -> dict:
             'barcode': (row['barcode'] or '').strip() or None,
             'photo_url': photo_url,
             'size_label': display_size or None,
-            'is_default': True,
+            'is_default': default_selling_option != 'pack',
         })
     if show_pack_price and pack_price is not None and float(pack_price) > 0:
         selling_options.append({
@@ -677,9 +956,24 @@ def build_product_dict(row: sqlite3.Row) -> dict:
             'price': float(pack_price),
             'barcode': pack_barcode or None,
             'photo_url': pack_photo_url or None,
-            'size_label': display_size or None,
-            'is_default': False,
+            'size_label': pack_label or display_size or None,
+            'contains_label': f"Contains {pack_quantity} × {display_size}" if pack_quantity > 1 and display_size else None,
+            'is_default': default_selling_option == 'pack',
         })
+    if show_case_price and case_price is not None and float(case_price) > 0:
+        selling_options.append({
+            'key': 'case',
+            'label': case_label or 'Case / Sack',
+            'price': float(case_price),
+            'barcode': case_barcode or None,
+            'photo_url': case_photo_url or None,
+            'size_label': case_label or display_size or None,
+            'contains_label': f"Contains {case_quantity} × {display_size}" if case_quantity > 1 and display_size else None,
+            'is_default': default_selling_option == 'case',
+        })
+    if selling_options and not any(opt.get('is_default') for opt in selling_options):
+        selling_options[0]['is_default'] = True
+    default_option = next((opt for opt in selling_options if opt.get('is_default')), selling_options[0] if selling_options else None)
     pack_option = selling_options[1] if len(selling_options) > 1 else None
     return {
         'merkey': row['merkey'],
@@ -693,16 +987,18 @@ def build_product_dict(row: sqlite3.Row) -> dict:
         'category_slug': row['category_slug'] or '',
         'class_l2_name': row['class_l2_name'] or '',
         'class_l3_name': row['class_l3_name'] or '',
-        'card_price': card_price or 0.0,
+        'card_price': (default_option.get('price') if default_option else card_price) or 0.0,
         'price_retail': row['price_retail'],
-        'price_subtext': build_price_subtext(row, card_price),
+        'price_subtext': build_price_subtext(row, card_price) if not default_option or default_option.get('key') == 'retail' else f"P{float(row['price_retail'] or 0):,.2f} piece price",
         'show_pack_on_storefront': show_pack_price,
         'pack_option': pack_option,
+        'default_selling_option': default_option.get('key') if default_option else 'retail',
+        'default_selling_option_label': default_option.get('label') if default_option else 'Piece',
         'selling_options': selling_options,
         'display_size': display_size,
         'size': row['size'] or '',
         'photo_url': photo_url,
-        'display_photo_url': (pack_option.get('photo_url') if pack_option and pack_option.get('photo_url') else photo_url),
+        'display_photo_url': photo_url,
         'badges': build_badges(row, is_fresh),
         'availability': {
             'label': availability['label'],
@@ -722,20 +1018,34 @@ def build_product_dict(row: sqlite3.Row) -> dict:
     }
 
 
+def homepage_tile_filter() -> tuple[str, list[object]]:
+    """SQL fragment that limits homepage tiles to FMCG-headline departments and
+    excludes bag/cigarette classes. Returns (clause_sql, params)."""
+    dept_q = ','.join('?' for _ in HOMEPAGE_TILE_DEPARTMENT_SLUGS)
+    excl_q = ','.join('?' for _ in HOMEPAGE_TILE_EXCLUDED_L3)
+    clause = (
+        f"department_slug IN ({dept_q}) "
+        f"AND COALESCE(class_l3_name, '') NOT IN ({excl_q})"
+    )
+    params: list[object] = list(HOMEPAGE_TILE_DEPARTMENT_SLUGS) + list(HOMEPAGE_TILE_EXCLUDED_L3)
+    return clause, params
+
+
 def fetch_featured_products(limit: int = 8) -> list[dict]:
+    tile_clause, tile_params = homepage_tile_filter()
     conn = get_conn()
     try:
         rows = conn.execute(
-            """
+            f"""
             SELECT *
             FROM products
-            WHERE active = 1
+            WHERE active = 1 AND {tile_clause}
             ORDER BY CASE WHEN COALESCE(priority, '') = 'TOP' THEN 0 ELSE 1 END,
                      COALESCE(txn_count_24m, 0) DESC,
                      name COLLATE NOCASE
             LIMIT ?
             """,
-            (limit,),
+            (*tile_params, limit),
         ).fetchall()
         return [build_product_dict(row) for row in rows]
     finally:
@@ -743,14 +1053,15 @@ def fetch_featured_products(limit: int = 8) -> list[dict]:
 
 
 def fetch_rotating_featured_collection(limit: int = 8) -> dict:
+    tile_clause, tile_params = homepage_tile_filter()
     featured_modes = [
         {
             'key': 'top_sellers',
             'eyebrow': 'Top Sellers',
             'title': 'Featured top sellers',
             'lede': 'Reliable fast movers and familiar basket-builders from across the catalog.',
-            'where_sql': 'active = 1',
-            'params': [],
+            'where_sql': f'active = 1 AND {tile_clause}',
+            'params': list(tile_params),
             'order_sql': "COALESCE(txn_count_24m, 0) DESC, CASE WHEN COALESCE(priority, '') = 'TOP' THEN 0 ELSE 1 END, name COLLATE NOCASE",
         },
         {
@@ -758,8 +1069,8 @@ def fetch_rotating_featured_collection(limit: int = 8) -> dict:
             'eyebrow': 'Fresh Picks',
             'title': 'Featured fresh picks',
             'lede': 'Fresh-market items with current availability and strong selling activity.',
-            'where_sql': "active = 1 AND department_slug = 'fresh'",
-            'params': [],
+            'where_sql': f"active = 1 AND department_slug = 'fresh' AND {tile_clause}",
+            'params': list(tile_params),
             'order_sql': "COALESCE(last_sale_date, '') DESC, COALESCE(txn_count_24m, 0) DESC, name COLLATE NOCASE",
         },
         {
@@ -767,8 +1078,8 @@ def fetch_rotating_featured_collection(limit: int = 8) -> dict:
             'eyebrow': 'Budget Picks',
             'title': 'Featured budget-friendly picks',
             'lede': 'Everyday staples at approachable price points for quick grocery baskets.',
-            'where_sql': "active = 1 AND COALESCE(display_price, price_retail, 0) BETWEEN 1 AND 150",
-            'params': [],
+            'where_sql': f"active = 1 AND COALESCE(display_price, price_retail, 0) BETWEEN 1 AND 150 AND {tile_clause}",
+            'params': list(tile_params),
             'order_sql': "COALESCE(txn_count_24m, 0) DESC, COALESCE(display_price, price_retail, 0) ASC, name COLLATE NOCASE",
         },
         {
@@ -776,8 +1087,8 @@ def fetch_rotating_featured_collection(limit: int = 8) -> dict:
             'eyebrow': 'Recently Bought',
             'title': 'Featured recently bought items',
             'lede': 'Items with very recent sales activity to keep the homepage feeling current.',
-            'where_sql': "active = 1 AND COALESCE(last_sale_date, '') >= date('now', '-7 days')",
-            'params': [],
+            'where_sql': f"active = 1 AND COALESCE(last_sale_date, '') >= date('now', '-7 days') AND {tile_clause}",
+            'params': list(tile_params),
             'order_sql': "COALESCE(last_sale_date, '') DESC, COALESCE(txn_count_24m, 0) DESC, name COLLATE NOCASE",
         },
     ]
@@ -815,20 +1126,25 @@ def fetch_rotating_featured_collection(limit: int = 8) -> dict:
 def fetch_department_spotlights(limit_per_department: int = 6) -> list[dict]:
     sections: list[dict] = []
     departments = fetch_departments(order_by_count=True)
+    headline_slugs = set(HOMEPAGE_TILE_DEPARTMENT_SLUGS)
+    excl_q = ','.join('?' for _ in HOMEPAGE_TILE_EXCLUDED_L3)
     conn = get_conn()
     try:
         for department in departments:
+            if department['slug'] not in headline_slugs:
+                continue
             rows = conn.execute(
-                """
+                f"""
                 SELECT *
                 FROM products
                 WHERE active = 1 AND department_id = ?
+                  AND COALESCE(class_l3_name, '') NOT IN ({excl_q})
                 ORDER BY CASE WHEN COALESCE(priority, '') = 'TOP' THEN 0 ELSE 1 END,
                          COALESCE(txn_count_24m, 0) DESC,
                          name COLLATE NOCASE
                 LIMIT ?
                 """,
-                (department['id'], limit_per_department),
+                (department['id'], *HOMEPAGE_TILE_EXCLUDED_L3, limit_per_department),
             ).fetchall()
             products = [build_product_dict(row) for row in rows]
             products = trim_orphaned_grid_items(products, HOMEPAGE_SPOTLIGHT_ROW_SIZE)
@@ -866,9 +1182,12 @@ def fetch_products(
         clauses.append('brand = ?')
         params.append(brand_name)
     if search_query:
-        like = f'%{search_query}%'
-        clauses.append('(name LIKE ? OR brand LIKE ? OR description LIKE ? OR barcode LIKE ? OR supplier_name LIKE ? OR category_name LIKE ? OR department_name LIKE ?)')
-        params.extend([like, like, like, like, like, like, like])
+        # Tokenize so "chicken nuggets" matches "Chicken Breast Nuggets" (each
+        # token must appear in search_text, but not necessarily adjacent).
+        tokens = [t for t in search_query.lower().split() if t]
+        for token in tokens:
+            clauses.append('search_text LIKE ?')
+            params.append(f'%{token}%')
     if min_price is not None:
         clauses.append(f'{DISPLAY_PRICE_SQL} >= ?')
         params.append(min_price)
@@ -949,15 +1268,38 @@ def fetch_products_by_merkeys(merkeys: list[str]) -> list[dict]:
 
 def build_cart_items() -> list[dict]:
     cart = get_cart()
-    products = fetch_products_by_merkeys(list(cart.keys()))
-    return [
-        {
+    if not cart:
+        return []
+    merkeys = list({line['merkey'] for line in cart.values()})
+    products_by_merkey = {p['merkey']: p for p in fetch_products_by_merkeys(merkeys)}
+    items: list[dict] = []
+    for line_key, line in cart.items():
+        product = products_by_merkey.get(line['merkey'])
+        if not product:
+            continue
+        live_option = next(
+            (opt for opt in (product.get('selling_options') or []) if opt.get('key') == line['option_key']),
+            None,
+        )
+        unit_price = line.get('price')
+        if unit_price is None:
+            unit_price = (live_option.get('price') if live_option else None) or product.get('card_price') or 0.0
+        unit_price = float(unit_price)
+        photo_url = line.get('photo_url') or (live_option and live_option.get('photo_url')) or product.get('photo_url')
+        label = line.get('label') or (live_option and live_option.get('label')) or 'Piece'
+        barcode = line.get('barcode') or (live_option and live_option.get('barcode')) or product.get('barcode')
+        items.append({
+            'line_key': line_key,
             'product': product,
-            'requested_qty': cart.get(product['merkey'], 1),
-            'line_price': (product['card_price'] or 0.0) * cart.get(product['merkey'], 1),
-        }
-        for product in products
-    ]
+            'requested_qty': line['qty'],
+            'option_key': line['option_key'],
+            'option_label': label,
+            'option_barcode': barcode,
+            'option_photo_url': photo_url,
+            'unit_price': unit_price,
+            'line_price': unit_price * line['qty'],
+        })
+    return items
 
 
 def create_order_request(
@@ -1001,8 +1343,9 @@ def create_order_request(
                 INSERT INTO order_request_items (
                     order_request_id, merkey, product_name, brand, requested_qty, original_requested_qty,
                     order_unit_label, pricing_basis, quoted_price, original_quoted_price, sellable_state,
-                    fulfillment_type, fulfillment_note, removed
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    fulfillment_type, fulfillment_note, removed,
+                    selling_option_key, selling_option_label, selling_option_barcode
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -1014,12 +1357,15 @@ def create_order_request(
                         item['requested_qty'],
                         item['product']['fulfillment']['order_unit_label'] or None,
                         item['product']['pricing_basis'] or None,
-                        item['product']['card_price'],
-                        item['product']['card_price'],
+                        item['unit_price'],
+                        item['unit_price'],
                         item['product']['sellable_state'],
                         item['product']['fulfillment']['type'],
                         item['product']['fulfillment']['note'],
                         0,
+                        item.get('option_key') or 'retail',
+                        item.get('option_label') or None,
+                        item.get('option_barcode') or None,
                     )
                     for item in cart_items
                 ],
@@ -1029,8 +1375,210 @@ def create_order_request(
         conn.close()
 
 
+def notify_ops_webhook(*, request_code: str, customer_name: str, item_count: int,
+                       estimated_total: float, action: str = 'new', note: str = '') -> None:
+    """Fire-and-forget notification to Slack/Discord/etc. via STOREFRONT_NOTIFICATIONS_WEBHOOK.
+    No-op when webhook isn't configured. Errors are swallowed so order flow never breaks.
+    `note` carries the customer's fulfillment notes (substitutions, item changes) so staff
+    can read them straight from the chat without opening the order."""
+    if not NOTIFICATIONS_WEBHOOK_URL:
+        return
+    try:
+        import urllib.request
+        import json as _json
+        verb = 'updated' if action == 'updated' else 'placed'
+        admin_url = f"{NOTIFICATIONS_PUBLIC_BASE}/orders/admin/{request_code}" if NOTIFICATIONS_PUBLIC_BASE else f"/orders/admin/{request_code}"
+        note_clean = ' '.join((note or '').split())
+        if len(note_clean) > 600:
+            note_clean = note_clean[:597] + '...'
+        # SECURITY: the note is customer-controlled and the storefront is publicly
+        # reachable (Tailscale Funnel). Defang every mention/link token so a note can
+        # never inject a ping — '@' breaks @everyone/@here/@name, '<' breaks the raw
+        # ID forms <@id>/<@&id>/<#id> (Discord) and <!here>/<@id> (Slack). The
+        # zero-width space is invisible in the rendered message.
+        note_clean = note_clean.replace('@', '@​').replace('<', '<​')
+        # customer_name is also customer-controlled — defang it the same way so it can't
+        # carry a ping when the operator mention forces parse:['everyone'] (e.g. @here).
+        name_clean = (customer_name or '(unknown)').replace('@', '@​').replace('<', '<​')
+        lines = [
+            f":shopping_cart: Order request *{verb}* — `{request_code}`",
+            f"Customer: {name_clean}",
+            f"Items: {item_count}  ·  Est. total: P{estimated_total:,.2f}",
+        ]
+        if note_clean:
+            lines.append(f":memo: Customer note: {note_clean}")
+        lines.append(f"Review: {admin_url}")
+        text = "\n".join(lines)
+        # Discord rejects unknown keys (403); Slack accepts. Pick the right key
+        # based on the URL host so a single env var works for either provider.
+        if 'discord.com' in NOTIFICATIONS_WEBHOOK_URL or 'discordapp.com' in NOTIFICATIONS_WEBHOOK_URL:
+            import re as _re
+            content = f"{NOTIFICATIONS_MENTION} {text}" if NOTIFICATIONS_MENTION else text
+            payload_obj = {'content': content}
+            # SECURITY: scope pings to ONLY the operator-configured mention. Never use a
+            # broad `parse` that would let any stray @here/<@id> in the message body (e.g.
+            # a customer note) trigger a ping. Combined with the note defang above, this
+            # makes customer text incapable of pinging anyone.
+            allowed = {'parse': []}
+            if NOTIFICATIONS_MENTION:
+                if '@everyone' in NOTIFICATIONS_MENTION or '@here' in NOTIFICATIONS_MENTION:
+                    allowed['parse'] = ['everyone']
+                role_ids = _re.findall(r'<@&(\d+)>', NOTIFICATIONS_MENTION)
+                user_ids = _re.findall(r'<@!?(\d+)>', NOTIFICATIONS_MENTION)
+                if role_ids:
+                    allowed['roles'] = role_ids
+                if user_ids:
+                    allowed['users'] = user_ids
+            payload_obj['allowed_mentions'] = allowed
+            payload = _json.dumps(payload_obj).encode('utf-8')
+        else:
+            payload = _json.dumps({'text': text}).encode('utf-8')
+        req = urllib.request.Request(
+            NOTIFICATIONS_WEBHOOK_URL,
+            data=payload,
+            headers={
+                'Content-Type': 'application/json',
+                # Discord rejects requests without a recognizable User-Agent.
+                'User-Agent': 'AnsonStorefront/1.0 (+https://ansonsupermart.com)',
+            },
+            method='POST',
+        )
+        with urllib.request.urlopen(req, timeout=4) as resp:
+            resp.read()
+    except Exception as exc:
+        app.logger.warning(f"Webhook notify failed: {exc}")
+
+
+STAFF_EDITABLE_STATUSES = {'NEW', 'REVIEWING', 'AWAITING_CUSTOMER_CONFIRMATION', 'CONFIRMED', 'FOR_RELEASE', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY'}
+
+
+def replace_order_request_items(
+    request_code: str,
+    customer_name: str,
+    contact_number: str,
+    contact_email: str,
+    fulfillment_method: str,
+    preferred_schedule: str,
+    location_details: str,
+    fulfillment_notes: str,
+    cart_items: list[dict],
+    staff_override: bool = False,
+) -> bool:
+    """Overwrite items + fulfillment fields on an existing order_request.
+    Customer-driven edits only allowed while status='NEW'. Staff (admin) can
+    edit any pre-COMPLETED/CANCELLED status when staff_override=True.
+    Returns True on success."""
+    conn = get_conn()
+    try:
+        order = conn.execute(
+            "SELECT id, status FROM order_requests WHERE request_code = ?",
+            (request_code,),
+        ).fetchone()
+        if not order:
+            return False
+        status = (order['status'] or '').upper()
+        if staff_override:
+            if status not in STAFF_EDITABLE_STATUSES:
+                return False
+        else:
+            if status != 'NEW':
+                return False
+        with conn:
+            conn.execute("DELETE FROM order_request_items WHERE order_request_id = ?", (order['id'],))
+            conn.execute(
+                """
+                UPDATE order_requests
+                SET customer_name = ?, contact_number = ?, contact_email = ?,
+                    fulfillment_method = ?, preferred_schedule = ?, location_details = ?,
+                    fulfillment_notes = ?, item_count = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    customer_name,
+                    contact_number,
+                    contact_email or None,
+                    fulfillment_method or None,
+                    preferred_schedule or None,
+                    location_details or None,
+                    fulfillment_notes or None,
+                    sum(item['requested_qty'] for item in cart_items),
+                    order['id'],
+                ),
+            )
+            conn.executemany(
+                """
+                INSERT INTO order_request_items (
+                    order_request_id, merkey, product_name, brand, requested_qty, original_requested_qty,
+                    order_unit_label, pricing_basis, quoted_price, original_quoted_price, sellable_state,
+                    fulfillment_type, fulfillment_note, removed,
+                    selling_option_key, selling_option_label, selling_option_barcode
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (
+                        order['id'],
+                        item['product']['merkey'],
+                        item['product']['name'],
+                        item['product']['brand'] or None,
+                        item['requested_qty'],
+                        item['requested_qty'],
+                        item['product']['fulfillment']['order_unit_label'] or None,
+                        item['product']['pricing_basis'] or None,
+                        item['unit_price'],
+                        item['unit_price'],
+                        item['product']['sellable_state'],
+                        item['product']['fulfillment']['type'],
+                        item['product']['fulfillment']['note'],
+                        0,
+                        item.get('option_key') or 'retail',
+                        item.get('option_label') or None,
+                        item.get('option_barcode') or None,
+                    )
+                    for item in cart_items
+                ],
+            )
+        return True
+    finally:
+        conn.close()
+
+
 def calculate_order_estimated_total(items: list[dict]) -> float:
     return sum((item.get('requested_qty') or 0) * (item.get('quoted_price') or 0.0) for item in items)
+
+
+def build_customer_product_label(product: dict, fallback_name: str = '') -> str:
+    name = (product.get('name') or fallback_name or '').strip()
+    brand = (product.get('brand') or '').strip()
+    size = (product.get('display_size') or product.get('size') or '').strip()
+    parts: list[str] = []
+    if brand and not name.lower().startswith(brand.lower()):
+        parts.append(brand)
+    if name:
+        parts.append(name)
+    if size and size.lower() not in ' '.join(parts).lower():
+        parts.append(size)
+    return ' '.join(parts).strip()
+
+
+def order_item_customer_label(item: dict) -> str:
+    option_label = (item.get('selling_option_label') or '').strip()
+    if option_label and option_label.lower() != 'piece':
+        product_name = (item.get('product_name') or '').strip()
+        brand = (item.get('brand') or '').strip()
+        parts: list[str] = []
+        if brand and not product_name.lower().startswith(brand.lower()):
+            parts.append(brand)
+        if product_name:
+            parts.append(product_name)
+        if option_label.lower() not in ' '.join(parts).lower():
+            parts.append(option_label)
+        return ' '.join(parts).strip()
+    return (
+        (item.get('customer_product_label') or '').strip()
+        or (item.get('product_name') or '').strip()
+        or (item.get('merkey') or '').strip()
+        or 'Item'
+    )
 
 
 def build_customer_update_message(order_request: dict, active_items: list[dict], removed_items: list[dict]) -> str:
@@ -1050,7 +1598,8 @@ def build_customer_update_message(order_request: dict, active_items: list[dict],
                 change_bits.append(
                     f"price P{(item.get('original_quoted_price') or 0.0):,.2f} -> P{(item.get('quoted_price') or 0.0):,.2f}"
                 )
-            summary = f"- {item['product_name']}: Qty {item['requested_qty']}, P{(item.get('quoted_price') or 0.0):,.2f}"
+            item_label = order_item_customer_label(item)
+            summary = f"- {item_label}: Qty {item['requested_qty']}, P{(item.get('quoted_price') or 0.0):,.2f}"
             if change_bits:
                 summary += f" ({'; '.join(change_bits)})"
             lines.append(summary)
@@ -1059,7 +1608,7 @@ def build_customer_update_message(order_request: dict, active_items: list[dict],
         lines.append("")
         lines.append("Unavailable or removed items:")
         for item in removed_items:
-            lines.append(f"- {item['product_name']}")
+            lines.append(f"- {order_item_customer_label(item)}")
 
     if active_items:
         lines.append("")
@@ -1075,9 +1624,12 @@ def fetch_order_request(request_code: str) -> dict | None:
     try:
         order_row = conn.execute(
             """
-            SELECT id, request_code, customer_name, contact_number, contact_email, fulfillment_method,
+            SELECT id, request_code, customer_id, customer_name, contact_number, contact_email, fulfillment_method,
                    preferred_schedule, location_details, fulfillment_notes, internal_note, status,
-                   item_count, confirmed_at, confirmed_total, customer_confirmation_note, created_at, updated_at
+                   item_count, confirmed_at, confirmed_total, customer_confirmation_note,
+                   payment_status, payment_method, payment_reference, payment_proof_path, payment_amount,
+                   payment_submitted_at, payment_verified_at, payment_verified_by, payment_verification_note,
+                   created_at, updated_at
             FROM order_requests
             WHERE request_code = ?
             """,
@@ -1089,7 +1641,9 @@ def fetch_order_request(request_code: str) -> dict | None:
             """
             SELECT id, merkey, product_name, brand, requested_qty, original_requested_qty, order_unit_label,
                    pricing_basis, quoted_price, original_quoted_price, sellable_state, fulfillment_type,
-                   fulfillment_note, removed, removal_reason, created_at
+                   fulfillment_note, removed, removal_reason, created_at,
+                   COALESCE(NULLIF(selling_option_key, ''), 'retail') AS selling_option_key,
+                   selling_option_label, selling_option_barcode
             FROM order_request_items
             WHERE order_request_id = ?
             ORDER BY id
@@ -1097,14 +1651,49 @@ def fetch_order_request(request_code: str) -> dict | None:
             (order_row['id'],),
         ).fetchall()
         items = [dict(row) for row in item_rows]
+        merkeys = list({item['merkey'] for item in items if item.get('merkey')})
+        product_lookup = {p['merkey']: p for p in fetch_products_by_merkeys(merkeys)} if merkeys else {}
+        for item in items:
+            product = product_lookup.get(item['merkey']) or {}
+            options = product.get('selling_options') or []
+            item['customer_product_label'] = build_customer_product_label(product, item.get('product_name') or '')
+            item['available_options'] = options
+            chosen = next((opt for opt in options if opt.get('key') == item.get('selling_option_key')), None)
+            item['display_photo_url'] = (
+                (chosen or {}).get('photo_url')
+                or product.get('photo_url')
+                or PLACEHOLDER_PHOTO
+            )
         active_items = [item for item in items if not item.get('removed')]
         removed_items = [item for item in items if item.get('removed')]
+        payment_rows = conn.execute(
+            """
+            SELECT id, payment_method, reference_number, amount, proof_path, status,
+                   customer_note, staff_note, submitted_at, verified_at, verified_by
+            FROM order_payments
+            WHERE order_request_id = ?
+            ORDER BY submitted_at DESC, id DESC
+            """,
+            (order_row['id'],),
+        ).fetchall()
+        payments = [
+            {
+                **dict(row),
+                'payment_method_label': payment_method_label(row['payment_method']),
+                'status_label': payment_status_label(row['status']),
+            }
+            for row in payment_rows
+        ]
         return {
             'request': {
                 **dict(order_row),
                 'status_label': order_status_label(order_row['status']),
+                'canonical_status': canonical_order_status(order_row['status']),
+                'payment_status_label': payment_status_label(order_row['payment_status']),
+                'payment_method_label': payment_method_label(order_row['payment_method']),
             },
             'items': active_items,
+            'payments': payments,
             'removed_items': removed_items,
             'estimated_total': calculate_order_estimated_total(active_items),
             'customer_update_message': build_customer_update_message(
@@ -1127,8 +1716,15 @@ def fetch_order_requests(status: str = '', fulfillment_method: str = '', query: 
         params: list[object] = []
 
         if status and status in ORDER_STATUS_OPTIONS:
-            clauses.append("status = ?")
-            params.append(status)
+            if status == 'FOR_RELEASE':
+                clauses.append("UPPER(COALESCE(status, 'NEW')) IN ('FOR_RELEASE', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY')")
+            elif status == 'RELEASED':
+                clauses.append("UPPER(COALESCE(status, 'NEW')) IN ('RELEASED', 'COMPLETED', 'FULFILLED')")
+            elif status == 'AWAITING_CUSTOMER_CONFIRMATION':
+                clauses.append("UPPER(COALESCE(status, 'NEW')) IN ('AWAITING_CUSTOMER_CONFIRMATION', 'CONFIRMED')")
+            else:
+                clauses.append("status = ?")
+                params.append(status)
 
         if fulfillment_method in {'pickup', 'delivery'}:
             clauses.append("fulfillment_method = ?")
@@ -1142,7 +1738,7 @@ def fetch_order_requests(status: str = '', fulfillment_method: str = '', query: 
         where_sql = f"WHERE {' AND '.join(clauses)}" if clauses else ''
         rows = conn.execute(
             f"""
-            SELECT request_code, customer_name, contact_number, fulfillment_method, status,
+            SELECT request_code, customer_name, contact_number, fulfillment_method, status, payment_status, payment_method,
                    item_count, created_at, updated_at
             FROM order_requests
             {where_sql}
@@ -1154,6 +1750,9 @@ def fetch_order_requests(status: str = '', fulfillment_method: str = '', query: 
             {
                 **dict(row),
                 'status_label': order_status_label(row['status']),
+                'canonical_status': canonical_order_status(row['status']),
+                'payment_status_label': payment_status_label(row['payment_status']),
+                'payment_method_label': payment_method_label(row['payment_method']),
                 'fulfillment_method_label': (row['fulfillment_method'] or '').replace('_', ' ').title() if row['fulfillment_method'] else '',
             }
             for row in rows
@@ -1163,7 +1762,7 @@ def fetch_order_requests(status: str = '', fulfillment_method: str = '', query: 
 
 
 def update_order_request(request_code: str, status: str, internal_note: str) -> bool:
-    if status not in ORDER_STATUS_OPTIONS:
+    if status not in ALL_ORDER_STATUS_OPTIONS:
         return False
     conn = get_conn()
     try:
@@ -1347,36 +1946,76 @@ def update_order_request_by_customer(request_code: str, form_data) -> tuple[bool
 
 
 def update_order_request_items(request_code: str, status: str, internal_note: str, form_data) -> bool:
-    if status not in ORDER_STATUS_OPTIONS:
+    if status not in ALL_ORDER_STATUS_OPTIONS:
         return False
 
     conn = get_conn()
     try:
-        order_row = conn.execute("SELECT id FROM order_requests WHERE request_code = ?", (request_code,)).fetchone()
+        order_row = conn.execute("SELECT id, payment_status FROM order_requests WHERE request_code = ?", (request_code,)).fetchone()
         if not order_row:
             return False
 
         item_rows = conn.execute(
-            "SELECT id FROM order_request_items WHERE order_request_id = ? ORDER BY id",
+            """
+            SELECT id, merkey, COALESCE(NULLIF(selling_option_key, ''), 'retail') AS selling_option_key,
+                   quoted_price, original_quoted_price
+            FROM order_request_items WHERE order_request_id = ? ORDER BY id
+            """,
             (order_row['id'],),
         ).fetchall()
+        merkeys = list({r['merkey'] for r in item_rows if r['merkey']})
+        product_lookup = {p['merkey']: p for p in fetch_products_by_merkeys(merkeys)} if merkeys else {}
+
+        if canonical_order_status(status) in {'FOR_RELEASE', 'RELEASED'} and (order_row['payment_status'] or 'UNPAID').upper() != 'PAID':
+            return False
 
         with conn:
             for row in item_rows:
                 item_id = row['id']
                 qty_raw = form_data.get(f'item_qty_{item_id}', '1')
-                price_raw = form_data.get(f'item_price_{item_id}', '0')
+                price_raw = form_data.get(f'item_price_{item_id}')
                 remove_flag = form_data.get(f'item_remove_{item_id}') == 'on'
+                requested_option = (form_data.get(f'item_option_{item_id}') or row['selling_option_key'] or 'retail').strip()
 
                 try:
                     qty = max(1, int(qty_raw))
                 except (TypeError, ValueError):
                     qty = 1
 
-                try:
-                    quoted_price = max(0.0, float(price_raw))
-                except (TypeError, ValueError):
-                    quoted_price = 0.0
+                # A BLANK price field must NEVER silently zero the line (that would
+                # quote the item as free). Treat blank/unparseable as "leave unchanged":
+                # keep the existing quote, falling back to the original quote if needed.
+                # Only an explicit number (including 0) sets a new price.
+                existing_price = row['quoted_price'] if row['quoted_price'] else row['original_quoted_price']
+                fallback_price = max(0.0, float(existing_price or 0.0))
+                if price_raw is None or str(price_raw).strip() == '':
+                    quoted_price = fallback_price
+                else:
+                    try:
+                        quoted_price = max(0.0, float(price_raw))
+                    except (TypeError, ValueError):
+                        quoted_price = fallback_price
+
+                option_label = None
+                option_barcode = None
+                option_changed = requested_option != (row['selling_option_key'] or 'retail')
+                product = product_lookup.get(row['merkey']) if row['merkey'] else None
+                if product:
+                    chosen = next(
+                        (opt for opt in (product.get('selling_options') or []) if opt.get('key') == requested_option),
+                        None,
+                    )
+                    if chosen is None:
+                        requested_option = 'retail'
+                        chosen = next(
+                            (opt for opt in (product.get('selling_options') or []) if opt.get('key') == 'retail'),
+                            None,
+                        )
+                    if chosen:
+                        option_label = chosen.get('label')
+                        option_barcode = chosen.get('barcode')
+                        if option_changed and chosen.get('price') is not None:
+                            quoted_price = float(chosen['price'])
 
                 removed = 1 if remove_flag else 0
                 conn.execute(
@@ -1384,11 +2023,14 @@ def update_order_request_items(request_code: str, status: str, internal_note: st
                     UPDATE order_request_items
                     SET requested_qty = ?,
                         quoted_price = ?,
+                        selling_option_key = ?,
+                        selling_option_label = ?,
+                        selling_option_barcode = ?,
                         removed = ?,
                         removal_reason = CASE WHEN ? = 1 THEN COALESCE(removal_reason, 'Removed during staff review') ELSE NULL END
                     WHERE id = ?
                     """,
-                    (qty, quoted_price, removed, removed, item_id),
+                    (qty, quoted_price, requested_option, option_label, option_barcode, removed, removed, item_id),
                 )
 
             active_count_row = conn.execute(
@@ -1434,8 +2076,9 @@ def confirm_order_request(request_code: str, customer_confirmation_note: str) ->
             cur = conn.execute(
                 """
                 UPDATE order_requests
-                SET status = 'CONFIRMED',
-                    confirmed_at = CURRENT_TIMESTAMP,
+                SET status = 'AWAITING_CUSTOMER_CONFIRMATION',
+                    payment_status = CASE WHEN COALESCE(payment_status, 'UNPAID') = 'UNPAID' THEN 'PAYMENT_PENDING' ELSE payment_status END,
+                    confirmed_at = COALESCE(confirmed_at, CURRENT_TIMESTAMP),
                     confirmed_total = ?,
                     customer_confirmation_note = ?,
                     updated_at = CURRENT_TIMESTAMP
@@ -1444,6 +2087,143 @@ def confirm_order_request(request_code: str, customer_confirmation_note: str) ->
                 (confirmed_total, customer_confirmation_note or None, order_row['id']),
             )
         return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def submit_customer_payment(request_code: str, form_data, files) -> tuple[bool, str]:
+    method = (form_data.get('payment_method') or '').strip().upper()
+    reference = (form_data.get('payment_reference') or '').strip()
+    customer_note = (form_data.get('payment_note') or '').strip()
+    if not allowed_payment_method(method):
+        return False, 'Please choose a supported payment method.'
+    proof_filename = None
+    try:
+        proof_filename = save_payment_proof(files.get('payment_proof'))
+    except ValueError as exc:
+        return False, str(exc)
+    if not reference and not proof_filename:
+        return False, 'Please enter a payment reference number or upload proof of payment.'
+
+    conn = get_conn()
+    try:
+        order_row = conn.execute(
+            """
+            SELECT id, status, payment_status, confirmed_total
+            FROM order_requests
+            WHERE request_code = ?
+            """,
+            (request_code,),
+        ).fetchone()
+        if not order_row:
+            return False, 'Order request not found.'
+        if not customer_can_submit_payment(dict(order_row)):
+            return False, 'Payment cannot be submitted for this order right now.'
+        amount = order_row['confirmed_total']
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO order_payments (
+                    order_request_id, payment_method, reference_number, amount, proof_path, status, customer_note
+                ) VALUES (?, ?, ?, ?, ?, 'SUBMITTED', ?)
+                """,
+                (order_row['id'], method, reference or None, amount, proof_filename, customer_note or None),
+            )
+            conn.execute(
+                """
+                UPDATE order_requests
+                SET payment_status = 'PAYMENT_SUBMITTED',
+                    payment_method = ?,
+                    payment_reference = ?,
+                    payment_proof_path = COALESCE(?, payment_proof_path),
+                    payment_amount = ?,
+                    payment_submitted_at = CURRENT_TIMESTAMP,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (method, reference or None, proof_filename, amount, order_row['id']),
+            )
+        return True, 'Payment details submitted. Staff will verify before release.'
+    finally:
+        conn.close()
+
+
+def update_staff_payment(request_code: str, form_data, files, action: str, admin_username: str | None) -> tuple[bool, str]:
+    method = (form_data.get('payment_method') or '').strip().upper()
+    reference = (form_data.get('payment_reference') or '').strip()
+    staff_note = (form_data.get('payment_verification_note') or '').strip()
+    amount_raw = (form_data.get('payment_amount') or '').strip()
+    amount = None
+    if amount_raw:
+        try:
+            amount = max(0.0, float(amount_raw))
+        except ValueError:
+            return False, 'Verified payment amount must be numeric.'
+    if method and not allowed_payment_method(method):
+        return False, 'Unsupported payment method.'
+    proof_filename = None
+    try:
+        proof_filename = save_payment_proof(files.get('payment_proof'))
+    except ValueError as exc:
+        return False, str(exc)
+
+    conn = get_conn()
+    try:
+        order_row = conn.execute(
+            "SELECT id, confirmed_total, payment_proof_path FROM order_requests WHERE request_code = ?",
+            (request_code,),
+        ).fetchone()
+        if not order_row:
+            return False, 'Order request not found.'
+        existing_proof = order_row['payment_proof_path']
+        final_proof = proof_filename or existing_proof
+        final_amount = amount if amount is not None else order_row['confirmed_total']
+        final_status = 'PAID' if action == 'payment_verify' else 'PAYMENT_REJECTED'
+        payment_row_status = 'VERIFIED' if action == 'payment_verify' else 'REJECTED'
+        next_order_status = "FOR_RELEASE" if action == 'payment_verify' else "AWAITING_CUSTOMER_CONFIRMATION"
+        with conn:
+            if method:
+                conn.execute(
+                    """
+                    INSERT INTO order_payments (
+                        order_request_id, payment_method, reference_number, amount, proof_path, status,
+                        staff_note, verified_at, verified_by
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+                    """,
+                    (order_row['id'], method, reference or None, final_amount, final_proof, payment_row_status, staff_note or None, admin_username or None),
+                )
+            conn.execute(
+                """
+                UPDATE order_requests
+                SET status = ?,
+                    payment_status = ?,
+                    payment_method = COALESCE(NULLIF(?, ''), payment_method),
+                    payment_reference = COALESCE(NULLIF(?, ''), payment_reference),
+                    payment_proof_path = COALESCE(?, payment_proof_path),
+                    payment_amount = COALESCE(?, payment_amount),
+                    payment_verified_at = CASE WHEN ? = 'PAID' THEN CURRENT_TIMESTAMP ELSE payment_verified_at END,
+                    payment_verified_by = CASE WHEN ? = 'PAID' THEN ? ELSE payment_verified_by END,
+                    payment_verification_note = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+                """,
+                (
+                    next_order_status,
+                    final_status,
+                    method,
+                    reference,
+                    proof_filename,
+                    final_amount,
+                    final_status,
+                    final_status,
+                    admin_username or None,
+                    staff_note or None,
+                    order_row['id'],
+                ),
+            )
+        if action == 'payment_verify':
+            return True, 'Payment verified. Order is now for release.'
+        return True, 'Payment proof rejected. Customer can resubmit payment details.'
     finally:
         conn.close()
 
@@ -1460,7 +2240,29 @@ def inject_global_template_values() -> dict:
         'storefront_admin_authenticated': bool(session.get(ADMIN_SESSION_KEY)),
         'customer_logged_in': bool(session.get(CUSTOMER_SESSION_KEY)),
         'customer_display_name': session.get(CUSTOMER_NAME_SESSION_KEY, ''),
+        'payment_status_label': payment_status_label,
+        'payment_method_label': payment_method_label,
     }
+
+
+@app.route('/orders/payment-proof/<path:filename>')
+def payment_proof_file(filename: str):
+    safe_name = secure_filename(filename)
+    if safe_name != filename:
+        abort(404)
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT customer_id FROM order_requests WHERE payment_proof_path = ?",
+            (filename,),
+        ).fetchone()
+    finally:
+        conn.close()
+    if not row:
+        abort(404)
+    if not session.get(ADMIN_SESSION_KEY) and row['customer_id'] != session.get(CUSTOMER_SESSION_KEY):
+        abort(404)
+    return send_from_directory(PAYMENT_PROOF_UPLOAD_DIR, filename, as_attachment=False)
 
 
 @app.route('/')
@@ -1593,46 +2395,73 @@ def add_to_cart(merkey: str):
         abort(404)
 
     quantity = max(request.form.get('quantity', 1, type=int) or 1, 1)
+    requested_option = (request.form.get('selected_option') or 'retail').strip() or 'retail'
+    selling_options = product.get('selling_options') or []
+    chosen = next((opt for opt in selling_options if opt.get('key') == requested_option), None)
+    if chosen is None:
+        chosen = next((opt for opt in selling_options if opt.get('is_default')), None)
+    if chosen is None:
+        chosen = {
+            'key': 'retail',
+            'label': 'Piece',
+            'price': product.get('card_price') or product.get('price_retail') or 0.0,
+            'barcode': product.get('barcode'),
+            'photo_url': product.get('photo_url'),
+        }
+
+    line_key = cart_line_key(merkey, chosen['key'])
     cart = get_cart()
-    cart[merkey] = cart.get(merkey, 0) + quantity
+    existing = cart.get(line_key)
+    new_qty = (existing.get('qty', 0) if existing else 0) + quantity
+    cart[line_key] = {
+        'merkey': merkey,
+        'qty': new_qty,
+        'option_key': chosen['key'],
+        'label': chosen.get('label') or ('Piece' if chosen['key'] == 'retail' else 'Pack / Box'),
+        'price': float(chosen.get('price') or 0.0),
+        'barcode': chosen.get('barcode'),
+        'photo_url': chosen.get('photo_url'),
+    }
     save_cart(cart)
     cart_count = get_cart_count()
-    item_qty = cart.get(merkey, quantity)
     if wants_json_response():
         return jsonify({
             'ok': True,
-            'message': f"{product['name']} added to basket.",
+            'message': f"{product['name']} ({cart[line_key]['label']}) added to basket.",
             'cart_count': cart_count,
-            'item_qty': item_qty,
+            'item_qty': new_qty,
             'merkey': merkey,
+            'option_key': chosen['key'],
         })
-    flash(f"{product['name']} added to order request cart.", 'success')
-    return redirect(request.form.get('next') or url_for('cart_page'))
+    flash(f"{product['name']} ({cart[line_key]['label']}) added to order request cart.", 'success')
+    return redirect(request.form.get('next') or get_editing_cart_url())
 
 
 @app.post('/cart/update')
 def update_cart():
     cart = get_cart()
-    for merkey in list(cart.keys()):
-        qty = request.form.get(f'qty_{merkey}', type=int)
+    for line_key in list(cart.keys()):
+        qty = request.form.get(f'qty_{line_key}', type=int)
         if qty is None:
             continue
         if qty <= 0:
-            cart.pop(merkey, None)
+            cart.pop(line_key, None)
         else:
-            cart[merkey] = qty
+            cart[line_key]['qty'] = qty
     save_cart(cart)
     flash('Order request cart updated.', 'success')
-    return redirect(url_for('cart_page'))
+    return redirect(request.form.get('next') or get_editing_cart_url())
 
 
 @app.post('/cart/remove/<merkey>')
 def remove_from_cart(merkey: str):
+    option_key = (request.form.get('option') or request.args.get('option') or 'retail').strip() or 'retail'
+    line_key = cart_line_key(merkey, option_key)
     cart = get_cart()
-    cart.pop(merkey, None)
+    cart.pop(line_key, None)
     save_cart(cart)
     flash('Item removed from order request cart.', 'success')
-    return redirect(url_for('cart_page'))
+    return redirect(request.form.get('next') or get_editing_cart_url())
 
 
 @app.route('/cart', methods=['GET', 'POST'])
@@ -1699,6 +2528,41 @@ def cart_page():
                 request_submitted=False,
             )
 
+        editing_code = get_editing_request_code()
+        if editing_code:
+            is_staff = bool(session.get(ADMIN_SESSION_KEY))
+            ok = replace_order_request_items(
+                editing_code,
+                customer_name, contact_number, contact_email,
+                fulfillment_method, preferred_schedule, location_details, fulfillment_notes,
+                cart_items,
+                staff_override=is_staff,
+            )
+            if not ok:
+                clear_editing_state()
+                flash(
+                    f'We couldn\'t save your changes to {editing_code} because our staff already '
+                    f'started preparing it. Your updated items are still in your cart — please '
+                    f'message us so we can apply them, or submit them as a new request.',
+                    'error',
+                )
+                return redirect(url_for('cart_page'))
+            save_cart({})
+            clear_editing_state()
+            notify_ops_webhook(
+                request_code=editing_code,
+                customer_name=customer_name,
+                item_count=sum(item['requested_qty'] for item in cart_items),
+                estimated_total=estimated_total,
+                action='updated',
+                note=fulfillment_notes,
+            )
+            flash(f'Order request {editing_code} updated with your changes.', 'success')
+            return redirect(url_for(
+                'admin_order_detail_page' if is_staff else 'order_request_page',
+                request_code=editing_code,
+            ))
+
         request_code = create_order_request(
             customer_name,
             contact_number,
@@ -1711,6 +2575,14 @@ def cart_page():
             customer_id=session.get(CUSTOMER_SESSION_KEY),
         )
         save_cart({})
+        notify_ops_webhook(
+            request_code=request_code,
+            customer_name=customer_name,
+            item_count=sum(item['requested_qty'] for item in cart_items),
+            estimated_total=estimated_total,
+            action='new',
+            note=fulfillment_notes,
+        )
         flash(f'Order request {request_code} submitted for internal review.', 'success')
         return render_template(
             'order_cart.html',
@@ -1758,8 +2630,9 @@ def order_lookup_page():
 
 @app.route('/account/register', methods=['GET', 'POST'])
 def customer_register_page():
+    next_target = (request.args.get('next') or request.form.get('next') or '').strip()
     if session.get(CUSTOMER_SESSION_KEY):
-        return redirect(url_for('customer_profile_page'))
+        return redirect(resolve_customer_redirect_target(next_target))
 
     breadcrumbs = [
         {'label': 'Home', 'url': url_for('home')},
@@ -1792,6 +2665,7 @@ def customer_register_page():
             return render_template(
                 'customer_register.html', breadcrumbs=breadcrumbs,
                 form_display_name=display_name, form_phone=phone_raw, form_email=email_raw,
+                next_target=next_target,
             )
 
         conn = get_conn()
@@ -1810,18 +2684,20 @@ def customer_register_page():
             if claimed:
                 msg += f' {claimed} previous order(s) linked to your account.'
             flash(msg, 'success')
-            return redirect(url_for('customer_profile_page'))
+            return redirect(resolve_customer_redirect_target(next_target))
         except sqlite3.IntegrityError:
             flash('An account with that phone number or email already exists.', 'error')
             return render_template(
                 'customer_register.html', breadcrumbs=breadcrumbs,
                 form_display_name=display_name, form_phone=phone_raw, form_email=email_raw,
+                next_target=next_target,
             )
         finally:
             conn.close()
 
     return render_template('customer_register.html', breadcrumbs=breadcrumbs,
-                           form_display_name='', form_phone='', form_email='')
+                           form_display_name='', form_phone='', form_email='',
+                           next_target=next_target)
 
 
 @app.route('/account/login', methods=['GET', 'POST'])
@@ -1848,6 +2724,66 @@ def customer_login_page():
         flash('Login failed. Please check your phone/email and password.', 'error')
 
     return render_template('customer_login.html', breadcrumbs=breadcrumbs, next_target=next_target)
+
+
+@app.route('/account/forgot-password', methods=['GET', 'POST'])
+def customer_forgot_password_page():
+    if session.get(CUSTOMER_SESSION_KEY):
+        return redirect(url_for('customer_profile_page'))
+
+    breadcrumbs = [
+        {'label': 'Home', 'url': url_for('home')},
+        {'label': 'Sign In', 'url': url_for('customer_login_page')},
+        {'label': 'Reset Password', 'url': None},
+    ]
+    form_phone = ''
+    form_email = ''
+    temp_password = None
+
+    if request.method == 'POST':
+        form_phone = (request.form.get('phone') or '').strip()
+        form_email = (request.form.get('email') or '').strip()
+        phone = ''.join(ch for ch in form_phone if ch.isdigit())
+        email = form_email.lower() if form_email else ''
+        if not phone and not email:
+            flash('Please enter the phone number or email you registered with.', 'error')
+        else:
+            conn = get_conn()
+            try:
+                if phone and email:
+                    row = conn.execute(
+                        "SELECT id, display_name FROM customers WHERE phone = ? AND email = ?",
+                        (phone, email),
+                    ).fetchone()
+                elif phone:
+                    row = conn.execute(
+                        "SELECT id, display_name FROM customers WHERE phone = ?", (phone,)
+                    ).fetchone()
+                else:
+                    row = conn.execute(
+                        "SELECT id, display_name FROM customers WHERE email = ?", (email,)
+                    ).fetchone()
+                if not row:
+                    flash('No account matches the details you entered.', 'error')
+                else:
+                    import secrets
+                    temp_password = secrets.token_urlsafe(8)[:10]
+                    with conn:
+                        conn.execute(
+                            "UPDATE customers SET password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+                            (generate_password_hash(temp_password), row['id']),
+                        )
+                    flash('Temporary password generated. Use it to sign in, then change it from your profile.', 'success')
+            finally:
+                conn.close()
+
+    return render_template(
+        'customer_forgot_password.html',
+        breadcrumbs=breadcrumbs,
+        form_phone=form_phone,
+        form_email=form_email,
+        temp_password=temp_password,
+    )
 
 
 @app.route('/account/logout', methods=['POST'])
@@ -1950,12 +2886,12 @@ def customer_orders_page():
     conn = get_conn()
     try:
         orders = conn.execute(
-            """SELECT id, request_code, customer_name, status, item_count,
+            """SELECT id, request_code, customer_name, status, payment_status, payment_method, item_count,
                       confirmed_total, created_at, fulfillment_method
                FROM order_requests WHERE customer_id = ? ORDER BY created_at DESC""",
             (customer_id,),
         ).fetchall()
-        orders = [dict(row) | {'status_label': order_status_label(row['status'])} for row in orders]
+        orders = [dict(row) | {'status_label': order_status_label(row['status']), 'payment_status_label': payment_status_label(row['payment_status']), 'payment_method_label': payment_method_label(row['payment_method'])} for row in orders]
     finally:
         conn.close()
     return render_template('customer_orders.html', breadcrumbs=breadcrumbs, orders=orders)
@@ -1965,24 +2901,25 @@ def customer_orders_page():
 @customer_login_required
 def customer_order_detail_page(request_code: str):
     customer_id = session.get(CUSTOMER_SESSION_KEY)
+    # Ownership check before delegating to the enriched bundle.
     conn = get_conn()
     try:
-        order = conn.execute(
-            "SELECT * FROM order_requests WHERE request_code = ? AND customer_id = ?",
+        owner = conn.execute(
+            "SELECT 1 FROM order_requests WHERE request_code = ? AND customer_id = ?",
             (request_code, customer_id),
         ).fetchone()
-        if not order:
-            abort(404)
-        order = dict(order)
-        items = [dict(r) for r in conn.execute(
-            "SELECT * FROM order_request_items WHERE order_request_id = ? ORDER BY id", (order['id'],),
-        ).fetchall()]
     finally:
         conn.close()
+    if not owner:
+        abort(404)
 
-    active_items = [i for i in items if not i.get('removed')]
-    removed_items = [i for i in items if i.get('removed')]
-    estimated_total = sum((i.get('requested_qty') or 0) * (i.get('quoted_price') or 0.0) for i in active_items)
+    order_bundle = fetch_order_request(request_code)
+    if not order_bundle:
+        abort(404)
+    order = order_bundle['request']
+    active_items = order_bundle['items']
+    removed_items = order_bundle['removed_items']
+    estimated_total = order_bundle['estimated_total']
     breadcrumbs = [
         {'label': 'Home', 'url': url_for('home')},
         {'label': 'My Orders', 'url': url_for('customer_orders_page')},
@@ -1999,6 +2936,9 @@ def customer_order_detail_page(request_code: str):
         customer_can_edit=customer_can_edit(order),
         customer_can_cancel=customer_can_cancel(order),
         customer_can_delete=customer_can_delete(order),
+        customer_can_submit_payment=customer_can_submit_payment(order),
+        payment_method_options=PAYMENT_METHOD_OPTIONS,
+        payment_history=order_bundle.get('payments', []),
         reorder_url=url_for('customer_reorder', request_code=request_code),
     )
 
@@ -2016,7 +2956,13 @@ def customer_reorder(request_code: str):
         if not order:
             abort(404)
         items = conn.execute(
-            "SELECT merkey, requested_qty FROM order_request_items WHERE order_request_id = ? AND removed = 0",
+            """
+            SELECT merkey, requested_qty, quoted_price,
+                   COALESCE(NULLIF(selling_option_key, ''), 'retail') AS selling_option_key,
+                   selling_option_label, selling_option_barcode
+            FROM order_request_items
+            WHERE order_request_id = ? AND removed = 0
+            """,
             (order['id'],),
         ).fetchall()
     finally:
@@ -2025,7 +2971,19 @@ def customer_reorder(request_code: str):
     cart = get_cart()
     for item in items:
         merkey = item['merkey']
-        cart[merkey] = cart.get(merkey, 0) + item['requested_qty']
+        option_key = item['selling_option_key'] or 'retail'
+        line_key = cart_line_key(merkey, option_key)
+        existing = cart.get(line_key)
+        new_qty = (existing.get('qty', 0) if existing else 0) + (item['requested_qty'] or 0)
+        cart[line_key] = {
+            'merkey': merkey,
+            'qty': new_qty,
+            'option_key': option_key,
+            'label': (item['selling_option_label'] or ('Piece' if option_key == 'retail' else 'Pack / Box')),
+            'price': float(item['quoted_price']) if item['quoted_price'] is not None else (existing.get('price') if existing else None),
+            'barcode': item['selling_option_barcode'] or (existing.get('barcode') if existing else None),
+            'photo_url': existing.get('photo_url') if existing else None,
+        }
     save_cart(cart)
     flash(f'Items from {request_code} added to your cart.', 'success')
     return redirect(url_for('cart_page'))
@@ -2068,6 +3026,25 @@ def admin_logout():
     return redirect(url_for('admin_login_page'))
 
 
+@app.route('/orders/admin/poll')
+@storefront_admin_required
+def admin_orders_poll():
+    """Lightweight JSON poll for the admin page. Returns count of orders in NEW
+    status and the most recent order id, so the page can detect new arrivals."""
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT COUNT(*) AS new_count, COALESCE(MAX(id), 0) AS latest_id "
+            "FROM order_requests WHERE UPPER(COALESCE(status,'NEW')) = 'NEW'"
+        ).fetchone()
+        return jsonify({
+            'new_count': int(row['new_count'] or 0),
+            'latest_id': int(row['latest_id'] or 0),
+        })
+    finally:
+        conn.close()
+
+
 @app.route('/orders/admin', methods=['GET'])
 @storefront_admin_required
 def admin_orders_page():
@@ -2097,6 +3074,12 @@ def admin_order_detail_page(request_code: str):
         status = (request.form.get('status') or '').strip().upper()
         internal_note = (request.form.get('internal_note') or '').strip()
         customer_confirmation_note = (request.form.get('customer_confirmation_note') or '').strip()
+        if action in {'payment_verify', 'payment_reject'}:
+            ok, message = update_staff_payment(
+                request_code, request.form, request.files, action, session.get(ADMIN_USERNAME_SESSION_KEY)
+            )
+            flash(message, 'success' if ok else 'error')
+            return redirect(url_for('admin_order_detail_page', request_code=request_code))
         if action == 'advance':
             existing_bundle = fetch_order_request(request_code)
             if existing_bundle:
@@ -2132,9 +3115,12 @@ def admin_order_detail_page(request_code: str):
         order_request=order_bundle['request'],
         order_items=order_bundle['items'],
         removed_items=order_bundle['removed_items'],
+        payment_history=order_bundle.get('payments', []),
+        payment_method_options=PAYMENT_METHOD_OPTIONS,
         estimated_total=order_bundle['estimated_total'],
         customer_update_message=order_bundle['customer_update_message'],
         customer_status_message=customer_status_message(order_bundle['request'], order_bundle['estimated_total']),
+        contact_links=build_admin_contact_links(order_bundle['request'], order_bundle['customer_update_message']),
         next_stage=next_fulfillment_stage(order_bundle['request']),
         status_options=ORDER_STATUS_OPTIONS,
     )
@@ -2161,7 +3147,170 @@ def order_request_page(request_code: str):
         customer_can_edit=customer_can_edit(order_bundle['request']),
         customer_can_cancel=customer_can_cancel(order_bundle['request']),
         customer_can_delete=customer_can_delete(order_bundle['request']),
+        customer_can_submit_payment=customer_can_submit_payment(order_bundle['request']),
+        payment_method_options=PAYMENT_METHOD_OPTIONS,
+        payment_history=order_bundle.get('payments', []),
     )
+
+
+@app.route('/orders/<request_code>/payment', methods=['POST'])
+def submit_order_payment(request_code: str):
+    order_bundle = fetch_order_request(request_code)
+    if not order_bundle:
+        abort(404)
+    customer_id = session.get(CUSTOMER_SESSION_KEY)
+    order_customer_id = order_bundle['request'].get('customer_id')
+    if order_customer_id and order_customer_id != customer_id:
+        abort(404)
+    ok, message = submit_customer_payment(request_code, request.form, request.files)
+    flash(message, 'success' if ok else 'error')
+    return redirect(url_for('customer_order_detail_page' if customer_id else 'order_request_page', request_code=request_code))
+
+
+@app.route('/orders/admin/<request_code>/edit-cart', methods=['GET', 'POST'])
+@storefront_admin_required
+def admin_edit_cart_page(request_code: str):
+    if get_editing_request_code() != request_code:
+        flash('No active edit cart found for this order. Click Add or substitute items first.', 'error')
+        return redirect(url_for('admin_order_detail_page', request_code=request_code))
+    if request.method == 'POST':
+        return apply_editing_order_request_cart(request_code)
+
+    order_bundle = fetch_order_request(request_code)
+    if not order_bundle:
+        abort(404)
+    order = order_bundle['request']
+    cart_items = build_cart_items()
+    return render_template(
+        'order_cart.html',
+        breadcrumbs=[
+            {'label': 'Order Admin', 'url': url_for('admin_orders_page')},
+            {'label': request_code, 'url': url_for('admin_order_detail_page', request_code=request_code)},
+            {'label': 'Edit basket', 'url': None},
+        ],
+        cart_items=cart_items,
+        estimated_total=sum(item['line_price'] for item in cart_items),
+        form_data={
+            'customer_name': order.get('customer_name') or '',
+            'contact_number': order.get('contact_number') or '',
+            'contact_email': order.get('contact_email') or '',
+            'fulfillment_method': order.get('fulfillment_method') or '',
+            'preferred_schedule': order.get('preferred_schedule') or '',
+            'location_details': order.get('location_details') or '',
+            'fulfillment_notes': order.get('fulfillment_notes') or '',
+        },
+        request_submitted=False,
+        admin_edit_mode=True,
+        admin_edit_request_code=request_code,
+    )
+
+
+@app.route('/orders/<request_code>/edit-cart', methods=['POST'])
+def start_editing_order_request(request_code: str):
+    order_bundle = fetch_order_request(request_code)
+    if not order_bundle:
+        abort(404)
+    order = order_bundle['request']
+    is_staff = bool(session.get(ADMIN_SESSION_KEY))
+    status = (order.get('status') or '').upper()
+    if is_staff:
+        if status not in STAFF_EDITABLE_STATUSES:
+            flash(f'Order is {status}; reopen it before editing items.', 'error')
+            return redirect(url_for('admin_order_detail_page', request_code=request_code))
+    else:
+        if status != 'NEW':
+            flash(
+                'This order is already being prepared by our staff, so it can no longer be '
+                'edited online. Please message us with any changes and we\'ll update it for you.',
+                'error',
+            )
+            return redirect(url_for('order_request_page', request_code=request_code))
+
+    new_cart: dict[str, dict] = {}
+    for item in order_bundle['items']:
+        merkey = (item.get('merkey') or '').strip()
+        if not merkey:
+            continue
+        option_key = (item.get('selling_option_key') or 'retail').strip() or 'retail'
+        line_key = cart_line_key(merkey, option_key)
+        new_cart[line_key] = {
+            'merkey': merkey,
+            'qty': max(1, int(item.get('requested_qty') or 1)),
+            'option_key': option_key,
+            'label': item.get('selling_option_label'),
+            'price': item.get('quoted_price'),
+            'barcode': item.get('selling_option_barcode'),
+            'photo_url': item.get('display_photo_url'),
+        }
+    save_cart(new_cart)
+    session[EDITING_REQUEST_KEY] = request_code
+    session.modified = True
+    flash(
+        f'Now editing {request_code}. Browse and add items, adjust quantities in your cart, '
+        f'then click "Save changes" to update this request.',
+        'success',
+    )
+    return redirect(url_for('home'))
+
+
+@app.route('/orders/<request_code>/apply-edit-cart', methods=['POST'])
+@storefront_admin_required
+def apply_editing_order_request_cart(request_code: str):
+    if get_editing_request_code() != request_code:
+        flash('No active edit cart found for this order.', 'error')
+        return redirect(url_for('admin_order_detail_page', request_code=request_code))
+
+    cart_items = build_cart_items()
+    if not cart_items:
+        flash('Edit cart is empty. Nothing was saved.', 'error')
+        return redirect(url_for('cart_page'))
+
+    order_bundle = fetch_order_request(request_code)
+    if not order_bundle:
+        abort(404)
+    order = order_bundle['request']
+    ok = replace_order_request_items(
+        request_code,
+        order.get('customer_name') or '',
+        order.get('contact_number') or '',
+        order.get('contact_email') or '',
+        order.get('fulfillment_method') or '',
+        order.get('preferred_schedule') or '',
+        order.get('location_details') or '',
+        order.get('fulfillment_notes') or '',
+        cart_items,
+        staff_override=True,
+    )
+    if not ok:
+        flash(f'Could not save changes to {request_code}. Check the order status and try again.', 'error')
+        return redirect(url_for('admin_order_detail_page', request_code=request_code))
+
+    estimated_total = sum(item['line_price'] for item in cart_items)
+    save_cart({})
+    clear_editing_state()
+    notify_ops_webhook(
+        request_code=request_code,
+        customer_name=order.get('customer_name') or '',
+        item_count=sum(item['requested_qty'] for item in cart_items),
+        estimated_total=estimated_total,
+        action='updated',
+        note=order.get('fulfillment_notes') or '',
+    )
+    flash(f'Order request {request_code} updated with edit cart changes.', 'success')
+    return redirect(url_for('admin_order_detail_page', request_code=request_code))
+
+
+@app.route('/orders/<request_code>/cancel-edit', methods=['POST'])
+def cancel_editing_order_request(request_code: str):
+    is_staff = bool(session.get(ADMIN_SESSION_KEY))
+    if get_editing_request_code() == request_code:
+        save_cart({})
+        clear_editing_state()
+        flash('Edits discarded. Your original request is unchanged.', 'success')
+    return redirect(url_for(
+        'admin_order_detail_page' if is_staff else 'order_request_page',
+        request_code=request_code,
+    ))
 
 
 @app.route('/orders/<request_code>/manage', methods=['POST'])

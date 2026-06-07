@@ -77,6 +77,9 @@ def ensure_runtime_schema():
     if "availability_override" not in cols:
         cur.execute("ALTER TABLE products ADD COLUMN availability_override TEXT DEFAULT 'AUTO'")
         changed = True
+    if "alpha_override" not in cols:
+        cur.execute("ALTER TABLE products ADD COLUMN alpha_override TEXT DEFAULT 'AUTO'")
+        changed = True
     if "show_pack_on_storefront" not in cols:
         cur.execute("ALTER TABLE products ADD COLUMN show_pack_on_storefront INTEGER DEFAULT 0")
         changed = True
@@ -88,6 +91,21 @@ def ensure_runtime_schema():
         changed = True
     if "pack_barcode" not in cols:
         cur.execute("ALTER TABLE products ADD COLUMN pack_barcode TEXT")
+        changed = True
+    if "show_case_on_storefront" not in cols:
+        cur.execute("ALTER TABLE products ADD COLUMN show_case_on_storefront INTEGER DEFAULT 0")
+        changed = True
+    if "case_display_label" not in cols:
+        cur.execute("ALTER TABLE products ADD COLUMN case_display_label TEXT")
+        changed = True
+    if "case_barcode" not in cols:
+        cur.execute("ALTER TABLE products ADD COLUMN case_barcode TEXT")
+        changed = True
+    if "case_quantity" not in cols:
+        cur.execute("ALTER TABLE products ADD COLUMN case_quantity INTEGER")
+        changed = True
+    if "case_photo_url" not in cols:
+        cur.execute("ALTER TABLE products ADD COLUMN case_photo_url TEXT")
         changed = True
     cur.execute("PRAGMA table_info(images)")
     image_cols = {r[1] for r in cur.fetchall()}
@@ -1343,10 +1361,19 @@ def product_update(merkey):
     unit=normalize_unit(request.form.get("unit"))
     notes=(request.form.get("notes") or "").strip()
     availability_override = (request.form.get("availability_override") or "AUTO").strip().upper()
+    alpha_override = (request.form.get("alpha_override") or "AUTO").strip().upper()
     show_pack_on_storefront = 1 if (request.form.get("show_pack_on_storefront") or "").strip() == "1" else 0
     pack_display_label = (request.form.get("pack_display_label") or "").strip()
     pack_photo_url = (request.form.get("pack_photo_url") or "").strip()
     pack_barcode = (request.form.get("pack_barcode") or "").strip()
+    show_case_on_storefront = 1 if (request.form.get("show_case_on_storefront") or "").strip() == "1" else 0
+    case_display_label = (request.form.get("case_display_label") or "").strip()
+    case_barcode = (request.form.get("case_barcode") or "").strip()
+    case_photo_url = (request.form.get("case_photo_url") or "").strip()
+    try:
+        case_quantity = int((request.form.get("case_quantity") or "").strip() or 0)
+    except (TypeError, ValueError):
+        case_quantity = 0
     primary_barcode=(request.form.get("primary_barcode") or "").strip()
     auto_fill_description = (request.form.get("auto_fill_description") or "").strip() == "1"
     auto_generate_size = (request.form.get("auto_generate_size") or "").strip() == "1"
@@ -1359,8 +1386,10 @@ def product_update(merkey):
 
     if auto_fill_description:
         description = compose_description(brand_name, name, size)
-    if availability_override not in {"AUTO", "FORCE_UNAVAILABLE"}:
+    if availability_override not in {"AUTO", "FORCE_UNAVAILABLE", "FORCE_AVAILABLE"}:
         availability_override = "AUTO"
+    if alpha_override not in {"AUTO", "FORCE_INCLUDE", "FORCE_EXCLUDE"}:
+        alpha_override = "AUTO"
 
     conn=get_db(); cur=conn.cursor()
     cur.execute(
@@ -1411,11 +1440,12 @@ def product_update(merkey):
     cur.execute("""
       UPDATE products SET description=?, name=?, brand_id=?, category_id=?, department_id=?,
                           size=?, weight_volume=?, unit_of_measurement=?,
-                          availability_override=?, show_pack_on_storefront=?, pack_display_label=?, pack_photo_url=?, pack_barcode=?,
+                          availability_override=?, alpha_override=?, show_pack_on_storefront=?, pack_display_label=?, pack_photo_url=?, pack_barcode=?,
+                          show_case_on_storefront=?, case_display_label=?, case_barcode=?, case_quantity=?, case_photo_url=?,
                           data_quality=?, needs_enrichment=?, enrichment_notes=?,
                           updated_at=CURRENT_TIMESTAMP
       WHERE merkey=?
-    """,(description,name,brand_id,category_id,department_id,size,weight_volume,unit,availability_override,show_pack_on_storefront,pack_display_label,pack_photo_url,pack_barcode,dq,ne,notes or "Updated via web encoder", merkey))
+    """,(description,name,brand_id,category_id,department_id,size,weight_volume,unit,availability_override,alpha_override,show_pack_on_storefront,pack_display_label,pack_photo_url,pack_barcode,show_case_on_storefront,case_display_label,case_barcode,case_quantity,case_photo_url,dq,ne,notes or "Updated via web encoder", merkey))
 
     # Allow barcode correction from product edit page.
     if primary_barcode:
@@ -1445,10 +1475,16 @@ def product_update(merkey):
         ("weight_volume", old_product.get("weight_volume") or "", weight_volume),
         ("unit_of_measurement", old_product.get("unit_of_measurement") or "", unit),
         ("availability_override", old_product.get("availability_override") or "AUTO", availability_override),
+        ("alpha_override", old_product.get("alpha_override") or "AUTO", alpha_override),
         ("show_pack_on_storefront", str(old_product.get("show_pack_on_storefront") or 0), str(show_pack_on_storefront)),
         ("pack_display_label", old_product.get("pack_display_label") or "", pack_display_label),
         ("pack_photo_url", old_product.get("pack_photo_url") or "", pack_photo_url),
         ("pack_barcode", old_product.get("pack_barcode") or "", pack_barcode),
+        ("show_case_on_storefront", str(old_product.get("show_case_on_storefront") or 0), str(show_case_on_storefront)),
+        ("case_display_label", old_product.get("case_display_label") or "", case_display_label),
+        ("case_barcode", old_product.get("case_barcode") or "", case_barcode),
+        ("case_quantity", str(old_product.get("case_quantity") or 0), str(case_quantity)),
+        ("case_photo_url", old_product.get("case_photo_url") or "", case_photo_url),
         ("primary_barcode", old_primary_barcode, primary_barcode),
     ]
     for field_name, old_value, new_value in field_changes:
@@ -1547,7 +1583,7 @@ def upload_photo(merkey):
       )
       VALUES(?,?,?,?,1,?,?,?,CURRENT_TIMESTAMP,'ok',200,CURRENT_TIMESTAMP,'Uploaded by web encoder')
     """,(merkey, stored_filename, up.url, str(upload_path), width, height, file_size))
-    cur.execute("UPDATE products SET needs_photo=0, updated_at=CURRENT_TIMESTAMP WHERE merkey=?",(merkey,))
+    cur.execute("UPDATE products SET needs_photo=0, needs_irl_photo=0, updated_at=CURRENT_TIMESTAMP WHERE merkey=?",(merkey,))
     log_audit(
         cur,
         "photo_upload",
@@ -1560,6 +1596,76 @@ def upload_photo(merkey):
     conn.commit(); conn.close()
 
     flash(f"{success_msg} ✅","success")
+    return redirect(url_for("product_edit", merkey=merkey, **list_state))
+
+@app.route("/product/<merkey>/pack-photo", methods=["POST"])
+@login_required
+def upload_pack_photo(merkey):
+    file = request.files.get("pack_photo")
+    if not file or file.filename == "":
+        file = request.files.get("pack_camera_photo")
+    if not file or file.filename == "":
+        flash("No pack photo selected from album/files or camera", "error")
+        return redirect(url_for("product_edit", merkey=merkey))
+    apply_white_bg = request.form.get("apply_white_bg", "").strip() == "1"
+    list_state = extract_list_state(request.form)
+
+    conn = get_db(); cur = conn.cursor()
+    cur.execute("SELECT pack_photo_url, pack_barcode FROM products WHERE merkey=?", (merkey,))
+    row = cur.fetchone()
+    if not row:
+        conn.close()
+        flash("Product not found", "error")
+        return redirect(url_for("products_list"))
+    old_pack_url = row["pack_photo_url"] or ""
+    pack_barcode = (row["pack_barcode"] or "").strip()
+    primary_barcode = get_primary_barcode(cur, merkey) or ""
+    if pack_barcode:
+        identifier = pack_barcode
+    elif primary_barcode:
+        identifier = f"{primary_barcode}-pack"
+    else:
+        identifier = f"{merkey}-pack"
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    safe = slugify(Path(file.filename).stem) or "pack"
+    source_ext = Path(file.filename).suffix.lower()
+    if source_ext not in {".jpg", ".jpeg", ".png", ".webp"}:
+        source_ext = ".jpg"
+    orig_path = ORIG_DIR / f"{merkey}_pack_{ts}_{safe}{source_ext}"
+    file.save(orig_path)
+
+    if apply_white_bg:
+        upload_path = PROC_DIR / f"{identifier}.jpg"
+        process_to_white_bg(orig_path, upload_path, size=1200, padding_ratio=0.06, try_remove_bg=True)
+        key = f"{S3_PREFIX}{identifier}.jpg"
+        content_type = "image/jpeg"
+        success_msg = "Pack photo uploaded + White BG processed + uploaded to S3"
+    else:
+        upload_path = orig_path
+        key = f"{S3_PREFIX}{identifier}{source_ext}"
+        content_type = file.mimetype or "application/octet-stream"
+        success_msg = "Pack photo uploaded directly to S3"
+
+    up = upload_file_to_s3(upload_path, key=key, bucket=S3_BUCKET, region=S3_REGION, content_type=content_type, public_read=True)
+    new_pack_url = up.url
+
+    cur.execute(
+        "UPDATE products SET pack_photo_url=?, updated_at=CURRENT_TIMESTAMP WHERE merkey=?",
+        (new_pack_url, merkey),
+    )
+    log_audit(
+        cur,
+        "pack_photo_upload",
+        merkey=merkey,
+        field_name="pack_photo_url",
+        old_value=old_pack_url,
+        new_value=new_pack_url,
+        details=f"identifier={identifier}; white_bg={'yes' if apply_white_bg else 'no'}",
+    )
+    conn.commit(); conn.close()
+
+    flash(f"{success_msg} ✅", "success")
     return redirect(url_for("product_edit", merkey=merkey, **list_state))
 
 if __name__ == "__main__":

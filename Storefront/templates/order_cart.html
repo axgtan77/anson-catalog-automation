@@ -12,13 +12,23 @@
 </nav>
 
 <div class="page-actions">
+    {% if admin_edit_mode %}
+    <a class="back-link" href="{{ url_for('admin_order_detail_page', request_code=admin_edit_request_code) }}">← Back to admin order</a>
+    {% else %}
     <a class="back-link" href="{{ url_for('home') }}" onclick="return storefrontGoBack('{{ url_for('home') }}')">← Back</a>
+    {% endif %}
 </div>
 
 <section class="list-header">
-    <p class="eyebrow">Order Request</p>
-    <h1>Order request cart</h1>
-    <p class="lede">Build a simple order request for internal review. Variable-weight fresh items will still be confirmed by staff during fulfillment.</p>
+    <p class="eyebrow">{% if admin_edit_mode %}Admin edit basket{% else %}Order Request{% endif %}</p>
+    <h1>{% if admin_edit_mode %}Editing {{ admin_edit_request_code }}{% else %}Order request cart{% endif %}</h1>
+    <p class="lede">
+        {% if admin_edit_mode %}
+        This basket is a draft for the admin order edit. Click Save changes to order when done.
+        {% else %}
+        Build a simple order request for internal review. Variable-weight fresh items will still be confirmed by staff during fulfillment.
+        {% endif %}
+    </p>
 </section>
 
 {% with messages = get_flashed_messages(with_categories=true) %}
@@ -57,25 +67,36 @@
 
         {% if cart_items %}
         <form method="post" action="{{ url_for('update_cart') }}">
+            <input type="hidden" name="next" value="{{ editing_cart_url if editing_request_code else url_for('cart_page') }}">
             <div class="cart-items">
                 {% for item in cart_items %}
                 <article class="cart-item">
-                    <img src="{{ item.product.photo_url }}" alt="{{ item.product.name }}" loading="lazy">
+                    <img src="{{ item.option_photo_url or item.product.photo_url }}" alt="{{ item.product.name }} {{ item.option_label }}" loading="lazy">
                     <div class="cart-item-main">
                         <div class="cart-item-brand">{{ item.product.brand or "Unbranded" }}</div>
                         <a class="cart-item-name" href="{{ url_for('product_page', merkey=item.product.merkey) }}">{{ item.product.name }}</a>
                         <div class="cart-item-meta">
+                            <span class="cart-option-tag">{{ item.option_label }}</span>
                             <span>{{ item.product.availability.label }}</span>
-                            {% if item.product.fulfillment.order_unit_label %}<span>{{ item.product.fulfillment.order_unit_label }}</span>{% endif %}
-                            {% if item.product.price_subtext %}<span>{{ item.product.price_subtext }}</span>{% endif %}
+                            {% if item.option_barcode %}<span>Barcode: {{ item.option_barcode }}</span>{% endif %}
+                            <span>P{{ "{:,.2f}".format(item.unit_price) }} each</span>
                         </div>
                         <div class="cart-item-note">{{ item.product.fulfillment.note }}</div>
                     </div>
                     <div class="cart-item-actions">
-                        <label for="qty_{{ item.product.merkey }}">Qty</label>
-                        <input id="qty_{{ item.product.merkey }}" name="qty_{{ item.product.merkey }}" type="number" min="0" value="{{ item.requested_qty }}">
+                        <div class="quantity-stepper" aria-label="Quantity selector">
+                            <button class="stepper-btn" type="button" data-step="-1" aria-label="Decrease quantity">-</button>
+                            <input class="stepper-input" id="qty_{{ item.line_key }}" name="qty_{{ item.line_key }}" type="number" min="1" value="{{ item.requested_qty }}" inputmode="numeric">
+                            <button class="stepper-btn" type="button" data-step="1" aria-label="Increase quantity">+</button>
+                        </div>
                         <div class="cart-item-price">P{{ "{:,.2f}".format(item.line_price) }}</div>
-                        <button class="filter-button" type="submit">Update</button>
+                        <div class="cart-item-buttons">
+                            <button class="filter-button" type="submit">Update</button>
+                            <button class="cart-remove-btn" type="submit"
+                                    formaction="{{ url_for('remove_from_cart', merkey=item.product.merkey) }}?option={{ item.option_key }}"
+                                    formnovalidate
+                                    aria-label="Remove {{ item.product.name }} from basket">Remove</button>
+                        </div>
                     </div>
                 </article>
                 {% endfor %}
@@ -88,13 +109,37 @@
 
     <div class="section-block cart-summary">
         <div class="section-heading">
-            <h2>Submit request</h2>
+            <h2>{% if admin_edit_mode %}Admin edit actions{% else %}Submit request{% endif %}</h2>
         </div>
 
         <div class="summary-line"><span>Items</span><strong>{{ cart_items|length }}</strong></div>
         <div class="summary-line"><span>Estimated total</span><strong>P{{ "{:,.2f}".format(estimated_total) }}</strong></div>
         <p class="summary-note">This is an order request, not a final paid checkout. Staff still review variable-weight items, substitutions, and final totals.</p>
 
+        {% if admin_edit_mode %}
+        <form method="post" action="{{ url_for('admin_edit_cart_page', request_code=admin_edit_request_code) }}" class="checkout-form">
+            <button class="primary-cta" type="submit" {% if not cart_items %}disabled{% endif %}>Save changes to order</button>
+            <a class="filter-button" style="text-align:center;text-decoration:none;" href="{{ url_for('home') }}">Add more items</a>
+            <a class="header-link-secondary" href="{{ url_for('admin_order_detail_page', request_code=admin_edit_request_code) }}">Back to admin order</a>
+        </form>
+        <p class="summary-note">Back to admin order does not save. Use Save changes to order to apply this edit basket.</p>
+        {% elif cart_items and not customer_logged_in %}
+        <div class="availability-box" style="margin:16px 0; background:#fff8ec; border-color:#f0c674;">
+            <strong>Save your details for faster checkout</strong>
+            <span style="display:block; margin-top:6px;">
+                Create an account or sign in to skip this form next time, save your delivery address, and track all your orders in one place.
+            </span>
+            <div style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;">
+                <a class="primary-cta" style="flex:1; min-width:140px; text-align:center; text-decoration:none;"
+                   href="{{ url_for('customer_register_page', next=url_for('cart_page')) }}">Create account</a>
+                <a class="filter-button" style="flex:1; min-width:140px; text-align:center; text-decoration:none;"
+                   href="{{ url_for('customer_login_page', next=url_for('cart_page')) }}">Sign in</a>
+            </div>
+            <span style="display:block; margin-top:10px; font-size:0.9em; color:#666;">Or continue as a guest below — no signup required.</span>
+        </div>
+        {% endif %}
+
+        {% if not admin_edit_mode %}
         <form method="post" action="{{ url_for('cart_page') }}" class="checkout-form">
             <label for="customer_name">Customer name</label>
             <input id="customer_name" name="customer_name" type="text" value="{{ form_data.customer_name or '' }}" required>
@@ -121,8 +166,11 @@
             <label for="fulfillment_notes">Notes for staff</label>
             <textarea id="fulfillment_notes" name="fulfillment_notes" rows="5" placeholder="Preferred replacements, timing, special instructions...">{{ form_data.fulfillment_notes or '' }}</textarea>
 
-            <button class="primary-cta" type="submit" {% if not cart_items %}disabled{% endif %}>Submit order request</button>
+            <button class="primary-cta" type="submit" {% if not cart_items %}disabled{% endif %}>
+                {% if editing_request_code %}Save changes to {{ editing_request_code }}{% else %}Submit order request{% endif %}
+            </button>
         </form>
+        {% endif %}
     </div>
 </section>
 
