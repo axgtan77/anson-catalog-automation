@@ -1,142 +1,705 @@
 {% extends "base.html" %}
 
+
+{% block extra_head %}
+<style>
+  .shop-product {
+    --rc-red:    #C0102E;
+    --rc-red-2:  #e23b54;
+    --rc-dark:   #6e0a1c;
+    --rc-gold:   #b8902b;
+    --rc-ink:    #1c1c22;
+    --rc-mut:    #7a7a86;
+    --rc-line:   #ececf1;
+    --rc-shelf:  #f7f3ec;
+    --rc-paper:  #fbfbfd;
+    margin: 0 auto;
+    max-width: 100%;
+    color: var(--rc-ink);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding-bottom: 140px;
+    position: relative;
+  }
+  @media (min-width: 641px)  { .shop-product { max-width: 760px; } }
+  @media (min-width: 1024px) { .shop-product { max-width: 1100px; padding-bottom: 32px; } }
+  @media (min-width: 1440px) { .shop-product { max-width: 1320px; } }
+
+  /* Crumbs */
+  .shop-product .shop-product-crumbs {
+    padding: 10px 16px 0; font-size: 11.5px; color: var(--rc-mut);
+    display: flex; flex-wrap: wrap; gap: 4px; align-items: center;
+  }
+  .shop-product .shop-product-crumbs a { color: var(--rc-mut); text-decoration: none; }
+  .shop-product .shop-product-crumbs a:hover { color: var(--rc-red); }
+  .shop-product .shop-product-crumbs-sep { color: #c5c5cc; }
+
+  /* Subhead */
+  .shop-product .shop-product-subhead {
+    padding: 11px 14px; background: #fff;
+    border-top: 1px solid var(--rc-line); border-bottom: 1px solid var(--rc-line);
+    display: flex; align-items: center; gap: 10px; margin-top: 8px;
+  }
+  .shop-product .shop-product-back {
+    width: 32px; height: 32px;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: #fbe9ec; color: var(--rc-red); border-radius: 9px;
+    font-size: 18px; text-decoration: none; flex-shrink: 0; font-weight: 700;
+  }
+  .shop-product .shop-product-title {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 18px; flex: 1; margin: 0; font-weight: 600;
+    color: var(--rc-ink); min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  /* Two-column body */
+  .shop-product .shop-product-body {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 14px;
+    padding: 14px 14px 0;
+  }
+
+  /* Hero photo card */
+  .shop-product .shop-product-hero {
+    background: #fff;
+    border: 1px solid var(--rc-line);
+    border-radius: 14px;
+    padding: 12px;
+    display: flex; flex-direction: column; gap: 10px;
+    box-shadow: 0 4px 14px rgba(20,10,30,.04);
+  }
+  .shop-product .shop-product-photo {
+    aspect-ratio: 1 / 1;
+    background: #fff;
+    border-radius: 10px;
+    overflow: hidden;
+    display: flex; align-items: center; justify-content: center;
+    padding: 6px;
+  }
+  .shop-product .shop-product-photo img {
+    max-width: 100%; max-height: 100%; object-fit: contain;
+  }
+  .shop-product .shop-product-photo-empty {
+    color: var(--rc-mut); font-size: 64px;
+    display: flex; align-items: center; justify-content: center;
+    width: 100%; height: 100%;
+  }
+  .shop-product .shop-product-badges {
+    display: flex; flex-wrap: wrap; gap: 6px;
+  }
+  .shop-product .shop-product-badge {
+    padding: 3px 9px; border-radius: 999px;
+    font-size: 10px; font-weight: 800;
+    letter-spacing: .04em; text-transform: uppercase;
+  }
+  .shop-product .shop-product-badge-top   { background: #FFF3E0; color: #BF360C; }
+  .shop-product .shop-product-badge-fresh { background: #C8E6C9; color: #2E7D32; }
+  .shop-product .shop-product-badge-photo { background: #FFCDD2; color: #C62828; }
+
+  /* Info panel */
+  .shop-product .shop-product-info {
+    background: #fff;
+    border: 1px solid var(--rc-line);
+    border-radius: 14px;
+    padding: 16px 16px 18px;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .shop-product .shop-product-brand {
+    font-size: 10.5px; color: var(--rc-mut);
+    text-transform: uppercase; letter-spacing: .07em; font-weight: 800;
+  }
+  .shop-product .shop-product-name {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 22px; line-height: 1.25; margin: 0;
+    color: var(--rc-ink); font-weight: 600;
+  }
+  .shop-product .shop-product-cat {
+    font-size: 12px; color: var(--rc-mut);
+  }
+  .shop-product .shop-product-price {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 30px; font-weight: 700; color: var(--rc-red);
+    letter-spacing: -.01em; margin-top: 4px;
+  }
+  .shop-product .shop-product-price-sub,
+  .shop-product .shop-product-size {
+    font-size: 12.5px; color: var(--rc-mut);
+  }
+
+  .shop-product .shop-product-stock {
+    display: flex; flex-direction: column; gap: 4px; margin-top: 4px;
+  }
+  /* Override the stock pill so it picks up tone via .stock-* classes from
+     storefront.css instead of looking like a flat chip. */
+  .shop-product .shop-product-stock-pill {
+    align-self: flex-start;
+    padding: 4px 12px; border-radius: 999px;
+    font-size: 11.5px; font-weight: 700;
+    background: #e7f5ec; color: #14784d; border: 1px solid #b9e2c3;
+    margin-top: 0;
+  }
+  .shop-product .shop-product-stock-pill.stock-low_stock {
+    background: #fff3da; color: #8a6708; border-color: #f0d49a;
+  }
+  .shop-product .shop-product-stock-pill.stock-out_of_stock {
+    background: #fdecee; color: #b00020; border-color: #f4b6c0;
+  }
+  .shop-product .shop-product-stock-note {
+    font-size: 12px; color: var(--rc-mut);
+  }
+
+  .shop-product .shop-product-fulfillment {
+    margin-top: 6px;
+    padding: 10px 12px;
+    border-radius: 10px;
+    background: var(--rc-paper);
+    border: 1px solid var(--rc-line);
+    font-size: 12px; color: var(--rc-ink);
+    line-height: 1.45;
+  }
+  .shop-product .shop-product-fulfillment strong {
+    display: block; font-weight: 700; font-size: 12.5px; margin-bottom: 2px;
+  }
+  .shop-product .shop-product-fulfillment span { color: var(--rc-mut); }
+
+  /* Selling-option pill toggle */
+  .shop-product .shop-product-options {
+    margin-top: 8px;
+    padding: 12px 12px 10px;
+    border-radius: 12px;
+    background: var(--rc-paper);
+    border: 1px solid var(--rc-line);
+  }
+  .shop-product .shop-product-options-head {
+    font-size: 11px; letter-spacing: .07em; text-transform: uppercase;
+    font-weight: 800; color: var(--rc-mut); margin-bottom: 8px;
+  }
+  .shop-product .shop-product-options-list {
+    display: flex; flex-wrap: wrap; gap: 8px;
+  }
+  .shop-product .shop-product-optpill {
+    flex: 1 1 0; min-width: 130px;
+    background: #fff; border: 1.5px solid var(--rc-line);
+    border-radius: 12px; padding: 9px 12px;
+    cursor: pointer; text-align: left;
+    font-family: inherit; color: var(--rc-ink);
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .shop-product .shop-product-optpill:hover {
+    border-color: var(--rc-red-2);
+  }
+  .shop-product .shop-product-optpill.is-selected {
+    border-color: var(--rc-red);
+    background: #fbe9ec;
+    box-shadow: 0 0 0 3px rgba(192,16,46,.08);
+  }
+  .shop-product .shop-product-optpill-lbl {
+    font-weight: 700; font-size: 13px;
+  }
+  .shop-product .shop-product-optpill-px {
+    font-family: Georgia, serif;
+    font-weight: 700; color: var(--rc-red); font-size: 14px;
+  }
+  .shop-product .shop-product-optpill-meta {
+    font-size: 11px; color: var(--rc-mut);
+  }
+
+  /* Form: qty + add */
+  .shop-product .shop-product-form {
+    margin-top: 12px;
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .shop-product .shop-product-formrow {
+    display: flex; align-items: center; gap: 12px;
+  }
+  .shop-product .shop-product-qtylbl {
+    font-size: 12px; font-weight: 700;
+    color: var(--rc-mut);
+    text-transform: uppercase; letter-spacing: .06em;
+  }
+  .shop-product .shop-product-qtystepper {
+    /* Inherits storefront.css .quantity-stepper rules; just tighten the size. */
+    width: 140px;
+    grid-template-columns: 38px 1fr 38px;
+    border-radius: 11px;
+  }
+  .shop-product .shop-product-qtystepper .stepper-btn { min-height: 38px; }
+  .shop-product .shop-product-qtystepper .stepper-input {
+    min-height: 38px; font-size: 14px;
+  }
+  .shop-product .shop-product-cta {
+    background: var(--rc-red); color: #fff;
+    border: 0; cursor: pointer;
+    font-weight: 800; font-size: 14px;
+    letter-spacing: .02em;
+    padding: 14px 18px; border-radius: 12px;
+    width: 100%;
+    box-shadow: 0 6px 16px rgba(192,16,46,.18);
+  }
+  .shop-product .shop-product-cta:hover { background: var(--rc-dark); }
+  .shop-product .shop-product-cta.is-disabled,
+  .shop-product .shop-product-cta:disabled {
+    background: #d9d9df; color: #fff; box-shadow: none; cursor: not-allowed;
+  }
+
+  /* Generic content section (description, details, related) */
+  .shop-product .shop-product-section {
+    margin-top: 14px;
+    background: #fff;
+    border: 1px solid var(--rc-line);
+    border-radius: 14px;
+    padding: 16px 16px 18px;
+    margin-left: 14px; margin-right: 14px;
+  }
+  .shop-product .shop-product-section h3 {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 15px; margin: 0 0 10px;
+    color: var(--rc-ink); font-weight: 600;
+  }
+  .shop-product .shop-product-desc {
+    margin: 0; font-size: 13px; line-height: 1.6;
+    color: var(--rc-ink);
+  }
+  .shop-product .shop-product-dlgrid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+    margin: 0;
+  }
+  .shop-product .shop-product-dlgrid > div {
+    padding: 10px 12px;
+    background: var(--rc-paper);
+    border: 1px solid var(--rc-line);
+    border-radius: 10px;
+  }
+  .shop-product .shop-product-dlgrid dt {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .08em;
+    color: var(--rc-mut); font-weight: 800; margin-bottom: 3px;
+  }
+  .shop-product .shop-product-dlgrid dd {
+    font-size: 12.5px; font-weight: 600; color: var(--rc-ink);
+    margin: 0; word-break: break-word;
+  }
+
+  /* Related product grid — uses _product_card.html unmodified */
+  .shop-product .shop-product-related-grid {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;
+  }
+  .shop-product .shop-product-related-grid .product-card {
+    background: #fff; border: 1px solid var(--rc-line); border-radius: 12px;
+    overflow: hidden;
+  }
+  .shop-product .shop-product-related-grid .product-meta { display: none; }
+
+  .shop-product .shop-product-bottom-spacer { height: 12px; }
+
+  /* ===== Sticky bottom CTA — mobile only (≤640px) ===== */
+  .shop-product .shop-product-sticky-cta { display: none; }
+  .shop-product .shop-product-bnav { display: none; }
+  @media (max-width: 640px) {
+    .shop-product .shop-product-sticky-cta {
+      display: flex; position: fixed; left: 0; right: 0; bottom: 0;
+      background: #fff; border-top: 1px solid var(--rc-line);
+      padding: 12px 16px max(14px, env(safe-area-inset-bottom)) 16px;
+      gap: 12px; align-items: center;
+      z-index: 90;
+      box-shadow: 0 -6px 18px rgba(20,10,30,.08);
+    }
+    .shop-product .shop-product-sticky-tot { flex: 1; min-width: 0; }
+    .shop-product .shop-product-sticky-tot .lbl {
+      font-size: 10.5px; color: var(--rc-mut);
+      text-transform: uppercase; letter-spacing: .06em;
+    }
+    .shop-product .shop-product-sticky-tot b {
+      font-family: Georgia, "Times New Roman", serif;
+      font-size: 18px; display: block; margin-top: 2px; color: var(--rc-red);
+    }
+    .shop-product .shop-product-sticky-btn {
+      background: var(--rc-red); color: #fff;
+      font-weight: 800; padding: 12px 22px;
+      border-radius: 11px; font-size: 13.5px;
+      border: 0; cursor: pointer;
+    }
+    .shop-product .shop-product-sticky-btn:disabled {
+      background: #d9d9df; color: #fff; cursor: not-allowed;
+    }
+    .shop-product .shop-product-bnav {
+      display: flex; position: fixed; left: 0; right: 0;
+      bottom: 76px;
+      background: #fff; border-top: 1px solid var(--rc-line);
+      padding: 7px 4px max(10px, env(safe-area-inset-bottom)) 4px;
+      justify-content: space-around; z-index: 80;
+      box-shadow: 0 -6px 18px rgba(20,10,30,.06);
+    }
+    .shop-product .shop-product-bnav-item {
+      flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
+      padding: 4px 0; color: var(--rc-mut); font-size: 10.5px; font-weight: 600;
+      text-decoration: none; position: relative;
+    }
+    .shop-product .shop-product-bnav-e { font-size: 18px; line-height: 1; }
+    .shop-product .shop-product-bnav-ct {
+      position: absolute; top: 0; right: calc(50% - 22px);
+      background: var(--rc-gold); color: var(--rc-ink);
+      font-size: 9px; font-weight: 800;
+      min-width: 16px; height: 16px; padding: 0 5px; border-radius: 10px;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .shop-product { padding-bottom: 170px; }
+  }
+
+  /* ===== Tablet (≥641): 3-up related grid; same single column body but
+     content sits in a 760px container. ===== */
+  @media (min-width: 641px) {
+    .shop-product .shop-product-related-grid { grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .shop-product .shop-product-subhead { padding: 12px 18px; }
+    .shop-product .shop-product-section { margin-left: 18px; margin-right: 18px; }
+  }
+
+  /* ===== Desktop (≥1024): 2-column body — photo left (~50%, capped at 560px),
+     info panel right, info panel sticks. Description/details/related still span
+     full width below. Mobile back arrow + sticky CTA both vanish. ===== */
+  @media (min-width: 1024px) {
+    .shop-product .shop-product-back { display: none; }
+    .shop-product .shop-product-title { font-size: 22px; }
+    .shop-product .shop-product-name { font-size: 26px; }
+
+    .shop-product .shop-product-body {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      gap: 28px;
+      padding: 18px 18px 0;
+      align-items: start;
+    }
+    .shop-product .shop-product-hero {
+      max-width: 560px;
+      justify-self: start;
+      position: sticky; top: 96px;
+    }
+    .shop-product .shop-product-info {
+      position: sticky; top: 96px;
+      padding: 20px 22px 22px;
+    }
+    .shop-product .shop-product-related-grid { grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .shop-product .shop-product-dlgrid { grid-template-columns: repeat(4, 1fr); }
+    .shop-product .shop-product-section { margin-left: 18px; margin-right: 18px; padding: 20px 22px 22px; }
+  }
+
+  /* ===== Wide (≥1440): 5-up related grid ===== */
+  @media (min-width: 1440px) {
+    .shop-product .shop-product-related-grid { grid-template-columns: repeat(5, 1fr); }
+  }
+</style>
+{% endblock %}
 {% block title %}{{ product.name }} | Anson Supermart{% endblock %}
 
 {% block content %}
 
-<nav class="breadcrumbs" aria-label="Breadcrumb">
-    {% for crumb in breadcrumbs %}
-    {% if crumb.url %}<a href="{{ crumb.url }}">{{ crumb.label }}</a>
-    {% else %}<span>{{ crumb.label }}</span>{% endif %}
-    {% endfor %}
-</nav>
+{# =====================================================================
+   ANSON Shop — product detail (rewrite, matches department/cart/checkout
+   visual language). Scoped under .shop-product.
 
-<div class="page-actions">
-    <a class="back-link" href="{{ url_for('home') }}" onclick="return storefrontGoBack('{{ url_for('home') }}')">← Back</a>
+   Mobile flow (default):
+     - Breadcrumbs → subhead with ← back + title
+     - Hero photo (white card, rounded)
+     - Brand · name · price · size · stock pill
+     - Selling-option pills (Retail / Pack / Case) when multiple
+     - Qty stepper + sticky bottom "Add to basket" CTA
+     - Description, Details key/value grid, Related products grid
+
+   Desktop flow (≥1024px):
+     - 2-column at top: photo left (~50%, capped 560px), info panel right
+     - The info panel + Add-to-basket sticks while the customer scrolls
+     - No mobile back arrow, no sticky-bottom CTA
+     - Description / Details / Related products span full width below
+   =====================================================================#}
+
+<div class="shop-product">
+
+  <nav class="shop-product-crumbs" aria-label="Breadcrumb">
+    {% for crumb in breadcrumbs %}
+      {% if crumb.url %}<a href="{{ crumb.url }}">{{ crumb.label }}</a>{% else %}<span>{{ crumb.label }}</span>{% endif %}
+      {% if not loop.last %}<span class="shop-product-crumbs-sep" aria-hidden="true">›</span>{% endif %}
+    {% endfor %}
+  </nav>
+
+  {# ===== Subhead: back arrow (mobile only) + title ===== #}
+  <div class="shop-product-subhead">
+    <a class="shop-product-back" href="{{ url_for('home') }}"
+       onclick="return storefrontGoBack('{{ url_for('home') }}')" aria-label="Back">&larr;</a>
+    <h1 class="shop-product-title" id="product-heading">{{ product.name }}</h1>
+  </div>
+
+  {# ===== Two-column body — collapses to single column on mobile via CSS. ===== #}
+  <div class="shop-product-body">
+
+    {# ----- Hero photo card ----- #}
+    <div class="shop-product-hero">
+      <div class="shop-product-photo">
+        {% if product.display_photo_url %}
+        <img id="product-hero-photo" src="{{ product.display_photo_url }}"
+             data-base-photo-url="{{ product.display_photo_url }}"
+             alt="{{ product.name }}">
+        {% else %}
+        <div class="shop-product-photo-empty"><span>🛍️</span></div>
+        {% endif %}
+      </div>
+
+      {% if product.badges %}
+      <div class="shop-product-badges">
+        {% for badge in product.badges %}
+        <span class="shop-product-badge shop-product-badge-{{ badge.tone }}">{{ badge.label }}</span>
+        {% endfor %}
+      </div>
+      {% endif %}
+    </div>
+
+    {# ----- Info panel (right column on desktop, full-width on mobile) ----- #}
+    <div class="shop-product-info">
+
+      {% if product.brand %}
+      <div class="shop-product-brand">{{ product.brand }}</div>
+      {% endif %}
+
+      <h2 class="shop-product-name">{{ product.name }}</h2>
+      <div class="shop-product-cat">
+        {{ product.department_name }}{% if product.category_name %} · {{ product.category_name }}{% endif %}
+      </div>
+
+      <div class="shop-product-price">P{{ "{:,.2f}".format(product.card_price) }}</div>
+      {% if product.price_subtext %}
+      <div class="shop-product-price-sub">{{ product.price_subtext }}</div>
+      {% endif %}
+
+      {% if product.display_size %}
+      <div class="shop-product-size">{{ product.display_size }}</div>
+      {% endif %}
+
+      {# ----- Stock pill (color derived from availability.label, since the
+              product dict doesn't expose stock_status directly) ----- #}
+      {% set _avlbl = (product.availability.label or '')|lower %}
+      {% if 'out of stock' in _avlbl %}{% set _stock = 'out_of_stock' %}
+      {% elif 'low stock' in _avlbl %}{% set _stock = 'low_stock' %}
+      {% else %}{% set _stock = 'in_stock' %}{% endif %}
+      <div class="shop-product-stock">
+        <span class="shop-product-stock-pill stock-{{ _stock }}">
+          {{ product.availability.label }}
+        </span>
+        {% if product.availability.note %}<span class="shop-product-stock-note">{{ product.availability.note }}</span>{% endif %}
+      </div>
+
+      {# ----- Fulfillment / substitution policy ----- #}
+      <div class="shop-product-fulfillment">
+        <strong>{{ product.fulfillment.label }}</strong>
+        <span>
+          {% if product.fulfillment.order_unit_label %}Sold as {{ product.fulfillment.order_unit_label }}. {% endif %}
+          {{ product.fulfillment.substitution_label }}.
+          {% if product.fulfillment.note %}{{ product.fulfillment.note }}{% endif %}
+        </span>
+      </div>
+
+      {# ----- Selling option pill toggle (only when there's a real choice) ----- #}
+      {% if product.selling_options and product.selling_options|length > 1 %}
+      <div class="shop-product-options" role="radiogroup" aria-label="Pack size">
+        <div class="shop-product-options-head">Pack size</div>
+        <div class="shop-product-options-list">
+          {% for option in product.selling_options %}
+          <button type="button"
+                  class="shop-product-optpill js-selling-option{% if option.is_default %} is-selected{% endif %}"
+                  data-option-key="{{ option.key }}"
+                  data-photo-url="{{ option.photo_url or product.photo_url }}"
+                  data-option-price="{{ option.price }}"
+                  data-option-label="{{ option.label }}"
+                  role="radio"
+                  aria-checked="{% if option.is_default %}true{% else %}false{% endif %}">
+            <span class="shop-product-optpill-lbl">{{ option.label }}</span>
+            <span class="shop-product-optpill-px">P{{ "{:,.2f}".format(option.price) }}</span>
+            {% if option.size_label %}<span class="shop-product-optpill-meta">{{ option.size_label }}</span>{% endif %}
+            {% if option.contains_label %}<span class="shop-product-optpill-meta">{{ option.contains_label }}</span>{% endif %}
+          </button>
+          {% endfor %}
+        </div>
+      </div>
+      {% endif %}
+
+      {# ----- Qty + Add-to-basket form (mirrors _product_card AJAX flow). ----- #}
+      {% if product.can_request_order %}
+      <form method="post" action="{{ url_for('add_to_cart', merkey=product.merkey) }}"
+            class="shop-product-form js-ajax-cart-form"
+            data-product-name="{{ product.name }}">
+        <input type="hidden" name="next" value="{{ request.path }}">
+        <input type="hidden" name="selected_option" id="selected_option_input" value="{{ product.default_selling_option }}">
+
+        <div class="shop-product-formrow">
+          <span class="shop-product-qtylbl">Qty</span>
+          <div class="quantity-stepper shop-product-qtystepper" aria-label="Quantity selector">
+            <button class="stepper-btn" type="button" data-step="-1" aria-label="Decrease quantity">&minus;</button>
+            <input id="quantity" name="quantity" type="number" min="1" value="1"
+                   class="stepper-input" inputmode="numeric">
+            <button class="stepper-btn" type="button" data-step="1" aria-label="Increase quantity">+</button>
+          </div>
+        </div>
+
+        <button class="shop-product-cta" type="submit">{{ product.cta_label }}</button>
+      </form>
+      {% else %}
+      <button class="shop-product-cta is-disabled" type="button" disabled>{{ product.cta_label }}</button>
+      {% endif %}
+
+    </div>{# /shop-product-info #}
+
+  </div>{# /shop-product-body #}
+
+  {# ===== Description (full-width below the 2-column block on desktop) ===== #}
+  {% if product.description %}
+  <section class="shop-product-section">
+    <h3>About this product</h3>
+    <p class="shop-product-desc">{{ product.description }}</p>
+  </section>
+  {% endif %}
+
+  {# ===== Details key/value grid ===== #}
+  <section class="shop-product-section">
+    <h3>Details</h3>
+    <dl class="shop-product-dlgrid">
+      <div>
+        <dt>Supplier</dt>
+        <dd>{{ product.supplier_name or "—" }}</dd>
+      </div>
+      <div>
+        <dt>Barcode</dt>
+        <dd>{{ product.barcode or "—" }}</dd>
+      </div>
+      <div>
+        <dt>Class</dt>
+        <dd>{{ product.class_l3_name or product.class_l2_name or "—" }}</dd>
+      </div>
+      <div>
+        <dt>Merkey</dt>
+        <dd>{{ product.merkey }}</dd>
+      </div>
+    </dl>
+  </section>
+
+  {# ===== Related products ===== #}
+  {% if related %}
+  <section class="shop-product-section shop-product-related">
+    <h3>You might also like</h3>
+    <div class="product-grid shop-product-related-grid">
+      {% for item in related %}
+      {% set card_product = item %}
+      {% include "_product_card.html" %}
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {# Spacer so the sticky CTA doesn't cover the last details row on mobile. #}
+  <div class="shop-product-bottom-spacer" aria-hidden="true"></div>
+
+  {# ===== Sticky add-to-basket bar — mobile only ===== #}
+  {% if product.can_request_order %}
+  <div class="shop-product-sticky-cta" aria-hidden="true">
+    <div class="shop-product-sticky-tot">
+      <div class="lbl">Price</div>
+      <b id="shop-product-sticky-price">P{{ "{:,.2f}".format(product.card_price) }}</b>
+    </div>
+    <button type="button" class="shop-product-sticky-btn js-sticky-add-to-basket">
+      {{ product.cta_label }}
+    </button>
+  </div>
+  {% endif %}
+
+  {# ===== Sticky bottom nav (mobile only) — mirrors home/cart/checkout ===== #}
+  <nav class="shop-product-bnav" aria-label="Primary shop navigation">
+    <a class="shop-product-bnav-item" href="{{ url_for('home') }}">
+      <span class="shop-product-bnav-e">🏠</span>Home
+    </a>
+    <a class="shop-product-bnav-item" href="{{ url_for('home') }}#shop-home-cat-toggle">
+      <span class="shop-product-bnav-e">📂</span>Browse
+    </a>
+    <a class="shop-product-bnav-item" href="{{ url_for('search') }}">
+      <span class="shop-product-bnav-e">🔍</span>Search
+    </a>
+    <a class="shop-product-bnav-item shop-product-bnav-cart" href="{{ url_for('cart_page') }}">
+      <span class="shop-product-bnav-e">🛒</span>Cart
+      <span class="shop-product-bnav-ct js-cart-badge" data-cart-badge{% if not cart_count or cart_count == 0 %} style="display:none"{% endif %}>{{ cart_count or 0 }}</span>
+    </a>
+    {% if customer_logged_in %}
+    <a class="shop-product-bnav-item" href="https://royalcard.ansonsupermart.com" target="_blank" rel="noopener">
+      <span class="shop-product-bnav-e">♛</span>Royal
+    </a>
+    {% else %}
+    <a class="shop-product-bnav-item" href="{{ url_for('customer_login_page') }}">
+      <span class="shop-product-bnav-e">♛</span>Sign in
+    </a>
+    {% endif %}
+  </nav>
+
 </div>
 
-<section class="product-page" aria-labelledby="product-heading">
-    <div class="product-photo-panel">
-        <img src="{{ product.display_photo_url }}" alt="{{ product.name }}">
-    </div>
+{# ===== Scoped product styles ===== #}
 
-    <div class="product-detail-panel">
-        <p class="eyebrow">
-            {{ product.department_name }}{% if product.category_name %} / {{ product.category_name }}{% endif %}
-        </p>
 
-        <h1 id="product-heading">{{ product.name }}</h1>
+{# ===== Product page JS: option toggle + sticky-cta proxy ===== #}
+<script>
+(() => {
+  const cards = document.querySelectorAll('.js-selling-option');
+  const hero = document.getElementById('product-hero-photo');
+  const selectedInput = document.getElementById('selected_option_input');
+  const stickyPrice = document.getElementById('shop-product-sticky-price');
+  const priceEl = document.querySelector('.shop-product-price');
 
-        {% if product.badges %}
-        <div class="product-badges product-badges-large">
-            {% for badge in product.badges %}
-            <span class="product-badge badge-{{ badge.tone }}">{{ badge.label }}</span>
-            {% endfor %}
-        </div>
-        {% endif %}
+  const formatPrice = (n) => 'P' + (Number(n) || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 
-        <div class="detail-brand">{{ product.brand or "Unbranded" }}</div>
+  function selectCard(card) {
+    cards.forEach((c) => {
+      c.classList.remove('is-selected');
+      c.setAttribute('aria-checked', 'false');
+    });
+    card.classList.add('is-selected');
+    card.setAttribute('aria-checked', 'true');
 
-        <div class="detail-price">P{{ "{:,.2f}".format(product.card_price) }}</div>
-        {% if product.price_subtext %}<div class="detail-price-subtext">{{ product.price_subtext }}</div>{% endif %}
+    const photo = card.dataset.photoUrl;
+    if (hero) {
+      if (photo) {
+        hero.src = photo;
+      } else if (hero.dataset.basePhotoUrl) {
+        hero.src = hero.dataset.basePhotoUrl;
+      }
+    }
+    if (selectedInput) {
+      selectedInput.value = card.dataset.optionKey || 'retail';
+    }
+    const priceVal = card.dataset.optionPrice;
+    if (priceVal !== undefined) {
+      const formatted = formatPrice(priceVal);
+      if (priceEl) priceEl.textContent = formatted;
+      if (stickyPrice) stickyPrice.textContent = formatted;
+    }
+  }
 
-        {% if product.selling_options and product.selling_options|length > 1 %}
-        <section class="selling-options-block" aria-label="Available pack sizes">
-            <div class="selling-options-heading">Available pack sizes</div>
-            <div class="selling-options-list">
-                {% for option in product.selling_options %}
-                <div class="selling-option-card{% if option.is_default %} is-default{% endif %}">
-                    <div class="selling-option-main">
-                        <div class="selling-option-label-row">
-                            <span class="selling-option-label">{{ option.label }}</span>
-                            {% if option.is_default %}<span class="selling-option-badge">Base</span>{% endif %}
-                        </div>
-                        <div class="selling-option-price">P{{ "{:,.2f}".format(option.price) }}</div>
-                        <div class="selling-option-meta-group">
-                            {% if option.size_label %}<div class="selling-option-meta">Size: {{ option.size_label }}</div>{% endif %}
-                            {% if option.barcode %}<div class="selling-option-meta">Barcode: {{ option.barcode }}</div>{% endif %}
-                        </div>
-                    </div>
-                    {% if option.photo_url %}
-                    <div class="selling-option-thumb">
-                        <img src="{{ option.photo_url }}" alt="{{ product.name }} {{ option.label }}">
-                    </div>
-                    {% endif %}
-                </div>
-                {% endfor %}
-            </div>
-        </section>
-        {% endif %}
+  cards.forEach((card) => {
+    card.addEventListener('click', () => selectCard(card));
+    card.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        selectCard(card);
+      }
+    });
+  });
 
-        {% if product.display_size %}
-        <div class="detail-size">{{ product.display_size }}</div>
-        {% endif %}
-
-        <div class="availability-box stock-box-{{ product.availability.stock_status }}">
-            <strong>{{ product.availability.label }}</strong>
-            <span>{{ product.availability.note }}</span>
-        </div>
-
-        <div class="availability-box">
-            <strong>{{ product.fulfillment.label }}</strong>
-            <span>
-                {% if product.fulfillment.order_unit_label %}Sold as {{ product.fulfillment.order_unit_label }}. {% endif %}
-                {{ product.fulfillment.substitution_label }}. {{ product.fulfillment.note }}
-            </span>
-        </div>
-
-        <p class="detail-description">{{ product.description }}</p>
-
-        <dl class="detail-grid">
-            <div>
-                <dt>Supplier</dt>
-                <dd>{{ product.supplier_name or "-" }}</dd>
-            </div>
-            <div>
-                <dt>Barcode</dt>
-                <dd>{{ product.barcode or "-" }}</dd>
-            </div>
-            <div>
-                <dt>Class</dt>
-                <dd>{{ product.class_l3_name or product.class_l2_name or "-" }}</dd>
-            </div>
-            <div>
-                <dt>Merkey</dt>
-                <dd>{{ product.merkey }}</dd>
-            </div>
-        </dl>
-
-        {% if product.can_request_order %}
-        <form method="post" action="{{ url_for('add_to_cart', merkey=product.merkey) }}" class="add-to-cart-form js-ajax-cart-form" data-product-name="{{ product.name }}">
-            <input type="hidden" name="next" value="{{ request.path }}">
-            <div>
-                <label for="quantity" class="cart-qty-label">Qty</label>
-                <div class="quantity-stepper quantity-stepper-large" aria-label="Quantity selector">
-                    <button class="stepper-btn" type="button" data-step="-1" aria-label="Decrease quantity">-</button>
-                    <input id="quantity" name="quantity" type="number" min="1" value="1" class="stepper-input cart-qty-input" inputmode="numeric">
-                    <button class="stepper-btn" type="button" data-step="1" aria-label="Increase quantity">+</button>
-                </div>
-            </div>
-            <button class="primary-cta" type="submit">{{ product.cta_label }}</button>
-        </form>
-        {% else %}
-        <button class="primary-cta" type="button" disabled>{{ product.cta_label }}</button>
-        {% endif %}
-    </div>
-</section>
-
-{% if related %}
-<section class="section-block">
-    <div class="section-heading">
-        <h2>Related products</h2>
-    </div>
-    <div class="product-grid">
-        {% for item in related %}
-        {% set card_product = item %}
-        {% include "_product_card.html" %}
-        {% endfor %}
-    </div>
-</section>
-{% endif %}
+  /* Sticky-bottom "Add to basket" → just triggers the real form submit so the
+     site-wide AJAX handler in base.html does all the work (toast, badge, etc.). */
+  const stickyBtn = document.querySelector('.js-sticky-add-to-basket');
+  const form = document.querySelector('.shop-product-form');
+  if (stickyBtn && form) {
+    stickyBtn.addEventListener('click', () => {
+      const realSubmit = form.querySelector('button[type="submit"]');
+      if (realSubmit) realSubmit.click();
+      else form.requestSubmit();
+    });
+  }
+})();
+</script>
 
 {% endblock %}

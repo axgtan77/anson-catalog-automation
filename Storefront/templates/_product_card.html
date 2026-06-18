@@ -32,15 +32,19 @@
 
     <div class="product-card-footer">
         {% if card_product.can_request_order %}
-        <form method="post" action="{{ url_for('add_to_cart', merkey=card_product.merkey) }}" class="product-card-cart-form js-ajax-cart-form" data-product-name="{{ card_product.name }}">
-            <input type="hidden" name="next" value="{{ request.full_path.rstrip('?') if request.full_path else request.path }}">
-            <div class="quantity-stepper" aria-label="Quantity selector">
-                <button class="stepper-btn" type="button" data-step="-1" aria-label="Decrease quantity">-</button>
-                <input class="stepper-input" type="number" name="quantity" min="1" value="1" inputmode="numeric" aria-label="Quantity">
-                <button class="stepper-btn" type="button" data-step="1" aria-label="Increase quantity">+</button>
-            </div>
-            <button class="product-card-cta" type="submit">Add to basket</button>
-        </form>
+            {% if card_product.pack_option %}
+            <a class="product-card-cta product-card-cta-choose" href="{{ url_for('product_page', merkey=card_product.merkey, slug=card_product.slug) }}">Choose size →</a>
+            {% else %}
+            <form method="post" action="{{ url_for('add_to_cart', merkey=card_product.merkey) }}" class="product-card-cart-form js-ajax-cart-form" data-product-name="{{ card_product.name }}">
+                <input type="hidden" name="next" value="{{ request.full_path.rstrip('?') if request.full_path else request.path }}">
+                <div class="quantity-stepper" aria-label="Quantity selector">
+                    <button class="stepper-btn" type="button" data-step="-1" aria-label="Decrease quantity">-</button>
+                    <input class="stepper-input" type="number" name="quantity" min="1" value="1" inputmode="numeric" aria-label="Quantity">
+                    <button class="stepper-btn" type="button" data-step="1" aria-label="Increase quantity">+</button>
+                </div>
+                <button class="product-card-cta" type="submit">Add to basket</button>
+            </form>
+            {% endif %}
         {% else %}
         <a class="product-card-secondary" href="{{ url_for('product_page', merkey=card_product.merkey, slug=card_product.slug) }}">View details</a>
         {% endif %}

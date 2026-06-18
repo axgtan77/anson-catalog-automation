@@ -43,10 +43,12 @@
                     {% if order.confirmed_total %}
                     &middot; &#8369;{{ "%.2f" | format(order.confirmed_total) }}
                     {% endif %}
+                    &middot; Payment: {{ order.payment_status_label }}
                 </div>
             </div>
             <div class="order-history-actions">
                 <span class="status-badge status-{{ order.status | lower }}">{{ order.status_label }}</span>
+                <span class="status-badge status-{{ order.payment_status | lower }}">{{ order.payment_status_label }}</span>
                 <form method="post" action="{{ url_for('customer_reorder', request_code=order.request_code) }}">
                     <button type="submit" class="secondary-cta" style="font-size:0.85rem; padding:6px 14px;">Reorder</button>
                 </form>

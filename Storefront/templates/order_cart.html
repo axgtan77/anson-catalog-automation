@@ -1,177 +1,565 @@
 {% extends "base.html" %}
 
-{% block title %}Order Request Cart | Anson Supermart{% endblock %}
+
+{% block extra_head %}
+<style>
+  .shop-cart {
+    --rc-red:    #C0102E;
+    --rc-red-2:  #e23b54;
+    --rc-dark:   #6e0a1c;
+    --rc-gold:   #b8902b;
+    --rc-ink:    #1c1c22;
+    --rc-mut:    #7a7a86;
+    --rc-line:   #ececf1;
+    --rc-shelf:  #f7f3ec;
+    --rc-paper:  #fbfbfd;
+    margin: 0 auto;
+    max-width: 100%;
+    color: var(--rc-ink);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding-bottom: 120px;
+    position: relative;
+  }
+  @media (min-width: 641px)  { .shop-cart { max-width: 760px; } }
+  @media (min-width: 1024px) { .shop-cart { max-width: 1100px; } }
+  @media (min-width: 1440px) { .shop-cart { max-width: 1320px; } }
+
+  .shop-cart .breadcrumbs { padding: 10px 16px 0; }
+
+  .shop-cart .shop-cart-flashes { padding: 12px 16px 0; display: flex; flex-direction: column; gap: 8px; }
+  .shop-cart .shop-cart-flash { padding: 10px 14px; border-radius: 10px; font-size: 13px; border: 1px solid var(--rc-line); background: #fff; }
+  .shop-cart .shop-cart-flash-info    { background: #fff7ea; border-color: #f0d49a; color: #6c4a06; }
+  .shop-cart .shop-cart-flash-success { background: #ecf8f0; border-color: #b9e2c3; color: #1a5a35; }
+  .shop-cart .shop-cart-flash-error   { background: #fdecee; border-color: #f4b6c0; color: #861028; }
+
+  .shop-cart .shop-cart-editing {
+    margin: 12px 16px 0; padding: 10px 14px; border-radius: 10px;
+    background: #fff7ea; border: 1px solid #f0d49a; color: #6c4a06; font-size: 12.5px;
+  }
+
+  .shop-cart .shop-cart-subhead {
+    padding: 14px 16px 8px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .shop-cart .shop-cart-back {
+    width: 32px; height: 32px;
+    display: inline-flex; align-items: center; justify-content: center;
+    background: #fbe9ec; color: var(--rc-red); border-radius: 9px;
+    text-decoration: none; font-size: 18px;
+  }
+  .shop-cart .shop-cart-title {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 20px; flex: 1;
+  }
+  .shop-cart .shop-cart-count {
+    font-size: 12.5px; color: var(--rc-mut);
+  }
+
+  .shop-cart .shop-cart-list {
+    padding: 0 16px;
+    background: #fff;
+    border-top: 1px solid var(--rc-line);
+    border-bottom: 1px solid var(--rc-line);
+  }
+  .shop-cart .shop-cart-item {
+    display: flex; gap: 11px; padding: 13px 0;
+    border-bottom: 1px solid var(--rc-line); align-items: center;
+  }
+  .shop-cart .shop-cart-item:last-child { border-bottom: 0; }
+  .shop-cart .shop-cart-item-photo {
+    width: 60px; height: 60px;
+    background: var(--rc-shelf);
+    border-radius: 10px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 26px; flex-shrink: 0; overflow: hidden;
+  }
+  .shop-cart .shop-cart-item-photo img {
+    width: 100%; height: 100%; object-fit: cover; display: block;
+  }
+  .shop-cart .shop-cart-item-info { flex: 1; min-width: 0; }
+  .shop-cart .shop-cart-item-name {
+    font-size: 13.5px; line-height: 1.3;
+    color: var(--rc-ink); text-decoration: none; font-weight: 600;
+  }
+  .shop-cart .shop-cart-item-sub {
+    font-size: 11.5px; color: var(--rc-mut); margin-top: 3px;
+  }
+  .shop-cart .shop-cart-item-right {
+    display: flex; flex-direction: column; align-items: flex-end; gap: 7px;
+  }
+  .shop-cart .shop-cart-item-price {
+    font-family: Georgia, "Times New Roman", serif;
+    font-weight: 700; font-size: 14px;
+  }
+  .shop-cart .shop-cart-stepper {
+    display: inline-flex; align-items: center;
+    background: #fbe9ec; border-radius: 18px;
+  }
+  .shop-cart .shop-cart-step {
+    width: 28px; height: 28px;
+    border: none; background: transparent;
+    color: var(--rc-red); font-weight: 800; font-size: 16px;
+    cursor: pointer;
+  }
+  .shop-cart .shop-cart-step:disabled { opacity: .35; cursor: default; }
+  .shop-cart .shop-cart-stepper-v {
+    padding: 0 8px; font-size: 12.5px; font-weight: 700;
+    min-width: 22px; text-align: center;
+  }
+  .shop-cart .shop-cart-remove-form { margin: 0; }
+  .shop-cart .shop-cart-remove {
+    background: none; border: 0; color: var(--rc-mut);
+    font-size: 10.5px; letter-spacing: .03em; cursor: pointer;
+    padding: 0; text-decoration: underline;
+  }
+  .shop-cart .shop-cart-remove:hover { color: var(--rc-red); }
+
+  .shop-cart .shop-cart-summary {
+    background: #fff;
+    margin-top: 8px;
+    padding: 14px 16px 14px;
+    border-top: 1px solid var(--rc-line);
+    border-bottom: 1px solid var(--rc-line);
+  }
+  .shop-cart .shop-cart-sumrow {
+    display: flex; justify-content: space-between;
+    padding: 5px 0; font-size: 13px;
+  }
+  .shop-cart .shop-cart-sumrow .lbl { color: var(--rc-mut); }
+  .shop-cart .shop-cart-sumrow .v { color: var(--rc-ink); }
+  .shop-cart .shop-cart-sumrow-total {
+    border-top: 1px solid var(--rc-line);
+    margin-top: 6px;
+    padding-top: 12px;
+    font-size: 15.5px; font-weight: 700;
+  }
+  .shop-cart .shop-cart-sumrow-total .lbl { color: var(--rc-ink); }
+  .shop-cart .shop-cart-sumrow-total .v { font-family: Georgia, "Times New Roman", serif; }
+
+  .shop-cart .shop-cart-earnchip {
+    background: linear-gradient(160deg, #fff4f6, #fbe9ec);
+    border: 1px solid #f0c5cc;
+    border-radius: 12px;
+    padding: 11px 12px;
+    margin: 10px 0 6px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  .shop-cart .shop-cart-earnchip .e {
+    width: 32px; height: 32px;
+    background: #fff; color: var(--rc-gold);
+    border-radius: 9px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 17px;
+  }
+  .shop-cart .shop-cart-earnchip .t { flex: 1; font-size: 12.5px; line-height: 1.4; }
+  .shop-cart .shop-cart-earnchip .t b { color: var(--rc-red); }
+  .shop-cart .shop-cart-earnchip .t .mut { color: var(--rc-mut); }
+
+  .shop-cart .shop-cart-bottom-spacer { height: 96px; }
+
+  .shop-cart .shop-cart-cta {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    background: #fff;
+    padding: 12px 16px max(14px, env(safe-area-inset-bottom)) 16px;
+    border-top: 1px solid var(--rc-line);
+    display: flex; gap: 12px; align-items: center;
+    z-index: 90;
+    box-shadow: 0 -6px 18px rgba(20,10,30,.07);
+    max-width: 720px;
+    margin: 0 auto;
+  }
+  .shop-cart .shop-cart-cta-tot { flex: 1; min-width: 0; }
+  .shop-cart .shop-cart-cta-tot .lbl {
+    font-size: 10.5px; color: var(--rc-mut);
+    text-transform: uppercase; letter-spacing: .06em;
+  }
+  .shop-cart .shop-cart-cta-tot b {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 18px; display: block; margin-top: 2px;
+  }
+  .shop-cart .shop-cart-cta-btn {
+    background: var(--rc-red); color: #fff;
+    font-weight: 800; padding: 12px 22px;
+    border-radius: 11px; font-size: 13.5px;
+    letter-spacing: .02em; text-decoration: none;
+    border: 0; cursor: pointer;
+  }
+  .shop-cart .shop-cart-cta-btn:hover { background: var(--rc-dark); }
+
+  .shop-cart .shop-cart-empty {
+    margin: 24px 16px; padding: 36px 20px;
+    background: #fff; border: 1px solid var(--rc-line);
+    border-radius: 14px; text-align: center;
+  }
+  .shop-cart .shop-cart-empty-ic { font-size: 40px; margin-bottom: 10px; }
+  .shop-cart .shop-cart-empty h2 {
+    font-family: Georgia, serif; font-size: 18px;
+    margin: 0 0 8px;
+  }
+  .shop-cart .shop-cart-empty p {
+    color: var(--rc-mut); font-size: 13px;
+    margin: 0 auto 18px; max-width: 320px;
+  }
+  .shop-cart .shop-cart-empty .shop-cart-cta-btn {
+    display: inline-block; padding: 11px 22px;
+  }
+
+  /* Sticky bottom nav — mobile only (≤640px) */
+  .shop-cart .shop-cart-bnav { display: none; }
+  @media (max-width: 640px) {
+    .shop-cart .shop-cart-bnav {
+      display: flex; position: fixed; left: 0; right: 0;
+      bottom: 76px; /* sit above the checkout CTA */
+      background: #fff; border-top: 1px solid var(--rc-line);
+      padding: 7px 4px max(10px, env(safe-area-inset-bottom)) 4px;
+      justify-content: space-around; z-index: 80;
+      box-shadow: 0 -6px 18px rgba(20,10,30,.06);
+    }
+    .shop-cart .shop-cart-bnav-item {
+      flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
+      padding: 4px 0; color: var(--rc-mut); font-size: 10.5px; font-weight: 600;
+      text-decoration: none; position: relative;
+    }
+    .shop-cart .shop-cart-bnav-on { color: var(--rc-red); }
+    .shop-cart .shop-cart-bnav-e { font-size: 18px; line-height: 1; }
+    .shop-cart .shop-cart-bnav-ct {
+      position: absolute; top: 0; right: calc(50% - 22px);
+      background: var(--rc-gold); color: var(--rc-ink);
+      font-size: 9px; font-weight: 800;
+      min-width: 16px; height: 16px; padding: 0 5px; border-radius: 10px;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .shop-cart { padding-bottom: 156px; }
+    .shop-cart .shop-cart-cta { box-shadow: none; }
+  }
+
+  /* ===== Tablet: just widen the inline-sticky CTA card ===== */
+  @media (min-width: 641px) {
+    .shop-cart .shop-cart-cta {
+      position: sticky; bottom: 12px;
+      border-radius: 12px;
+      box-shadow: 0 8px 22px rgba(20,10,30,.10);
+      margin: 16px 16px 0;
+      max-width: calc(760px - 32px);
+      border: 1px solid var(--rc-line);
+    }
+  }
+
+  /* ===== Desktop: two-column layout — items left (~65%), summary right (~35%).
+     The summary panel pins as the customer scrolls the items list and now hosts
+     the Checkout button itself, so the sticky-bottom CTA collapses inline. ===== */
+  @media (min-width: 1024px) {
+    .shop-cart {
+      padding-bottom: 24px;
+    }
+    .shop-cart .shop-cart-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1.85fr) minmax(320px, 0.95fr);
+      gap: 24px;
+      padding: 0 18px;
+      align-items: start;
+    }
+    .shop-cart .shop-cart-list {
+      padding: 0 16px;
+      border: 1px solid var(--rc-line);
+      border-radius: 14px;
+      background: #fff;
+    }
+    .shop-cart .shop-cart-side {
+      position: sticky;
+      top: 96px;
+      align-self: start;
+    }
+    .shop-cart .shop-cart-summary {
+      margin-top: 0;
+      border: 1px solid var(--rc-line);
+      border-radius: 14px;
+      padding: 16px 18px 18px;
+    }
+    .shop-cart .shop-cart-cta {
+      position: static;
+      max-width: none;
+      margin: 14px 0 0;
+      padding: 12px 16px;
+      box-shadow: none;
+      border-radius: 11px;
+      border: 1px solid var(--rc-line);
+      background: var(--rc-paper);
+    }
+    .shop-cart .shop-cart-bottom-spacer { display: none; }
+    /* Subhead / breadcrumbs span the full content width above the columns. */
+    .shop-cart .shop-cart-subhead { padding-left: 18px; padding-right: 18px; }
+    .shop-cart .breadcrumbs { padding: 14px 18px 0; }
+    .shop-cart .shop-cart-title { font-size: 24px; }
+    .shop-cart .shop-cart-back { display: none; }
+  }
+</style>
+{% endblock %}
+{% block title %}Cart | Anson Supermart{% endblock %}
 
 {% block content %}
 
-<nav class="breadcrumbs" aria-label="Breadcrumb">
+{# Milestone 5 — Redesigned mobile-first cart. The order-submission form moved
+   to /checkout. Admin-edit-cart and any old POST-/cart bookmarks still work
+   (the cart_page route delegates POST → checkout_page). #}
+
+<div class="shop-cart">
+
+  <nav class="breadcrumbs" aria-label="Breadcrumb">
     {% for crumb in breadcrumbs %}
     {% if crumb.url %}<a href="{{ crumb.url }}">{{ crumb.label }}</a>
     {% else %}<span>{{ crumb.label }}</span>{% endif %}
     {% endfor %}
-</nav>
+  </nav>
 
-<div class="page-actions">
-    {% if admin_edit_mode %}
-    <a class="back-link" href="{{ url_for('admin_order_detail_page', request_code=admin_edit_request_code) }}">← Back to admin order</a>
-    {% else %}
-    <a class="back-link" href="{{ url_for('home') }}" onclick="return storefrontGoBack('{{ url_for('home') }}')">← Back</a>
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div class="shop-cart-flashes">
+      {% for category, message in messages %}
+      <div class="shop-cart-flash shop-cart-flash-{{ category }}">{{ message }}</div>
+      {% endfor %}
+    </div>
     {% endif %}
+  {% endwith %}
+
+  {% if editing_request_code %}
+  <div class="shop-cart-editing">
+    Editing <strong>{{ editing_request_code }}</strong> &mdash; update items here, then
+    head to checkout to save.
+  </div>
+  {% endif %}
+
+  <div class="shop-cart-subhead">
+    <a class="shop-cart-back" href="{{ url_for('home') }}" onclick="return storefrontGoBack('{{ url_for('home') }}')" aria-label="Back">&larr;</a>
+    <div class="shop-cart-title">Your Cart</div>
+    <div class="shop-cart-count">{{ cart_items|length }} item{% if cart_items|length != 1 %}s{% endif %}</div>
+  </div>
+
+  {% if cart_items %}
+  <div class="shop-cart-grid">
+  <div class="shop-cart-list">
+    {% for item in cart_items %}
+    <article class="shop-cart-item" data-line-key="{{ item.line_key }}" data-merkey="{{ item.product.merkey }}" data-option-key="{{ item.option_key }}">
+      <div class="shop-cart-item-photo">
+        {% if item.option_photo_url or item.product.photo_url %}
+        <img src="{{ item.option_photo_url or item.product.photo_url }}" alt="{{ item.product.name }}" loading="lazy">
+        {% else %}
+        <span>🛍️</span>
+        {% endif %}
+      </div>
+      <div class="shop-cart-item-info">
+        <a class="shop-cart-item-name" href="{{ url_for('product_page', merkey=item.product.merkey) }}">{{ item.product.name }}</a>
+        <div class="shop-cart-item-sub">
+          {{ item.option_label }}
+          {% if item.product.brand %} &middot; {{ item.product.brand }}{% endif %}
+        </div>
+      </div>
+      <div class="shop-cart-item-right">
+        <div class="shop-cart-item-price js-line-price" data-line-key="{{ item.line_key }}">P{{ "{:,.2f}".format(item.line_price) }}</div>
+        <div class="shop-cart-stepper" data-line-key="{{ item.line_key }}">
+          <button type="button" class="shop-cart-step js-cart-step" data-step="-1" aria-label="Decrease quantity">&minus;</button>
+          <span class="shop-cart-stepper-v js-cart-qty" data-line-key="{{ item.line_key }}">{{ item.requested_qty }}</span>
+          <button type="button" class="shop-cart-step js-cart-step" data-step="1" aria-label="Increase quantity">+</button>
+        </div>
+        <form method="post" action="{{ url_for('remove_from_cart', merkey=item.product.merkey) }}?option={{ item.option_key }}" class="shop-cart-remove-form">
+          <input type="hidden" name="next" value="{{ url_for('cart_page') }}">
+          <button type="submit" class="shop-cart-remove js-cart-remove" data-line-key="{{ item.line_key }}" aria-label="Remove {{ item.product.name }}">Remove</button>
+        </form>
+      </div>
+    </article>
+    {% endfor %}
+  </div>
+
+  <div class="shop-cart-side">
+  <div class="shop-cart-summary">
+    <div class="shop-cart-sumrow"><span class="lbl">Subtotal</span><span class="v js-subtotal">P{{ "{:,.2f}".format(estimated_total) }}</span></div>
+    <div class="shop-cart-sumrow"><span class="lbl">Pickup fee</span><span class="v">Free</span></div>
+
+    {% if royal_card_linked %}
+    <div class="shop-cart-earnchip">
+      <div class="e">★</div>
+      <div class="t">
+        You'll earn <b><span class="js-earn-pts">{{ earn_pts }}</span> Royal Card pts</b> on this basket.<br>
+        <span class="mut">Credited after pickup.</span>
+      </div>
+    </div>
+    {% endif %}
+
+    <div class="shop-cart-sumrow shop-cart-sumrow-total">
+      <span class="lbl">Total</span><span class="v js-total">P{{ "{:,.2f}".format(estimated_total) }}</span>
+    </div>
+  </div>
+
+  {# Spacer so the sticky CTA doesn't cover the summary on mobile. #}
+  <div class="shop-cart-bottom-spacer" aria-hidden="true"></div>
+
+  {# Sticky checkout CTA — pinned bottom on mobile, inline on desktop. #}
+  <div class="shop-cart-cta">
+    <div class="shop-cart-cta-tot">
+      <div class="lbl">{{ cart_items|length }} item{% if cart_items|length != 1 %}s{% endif %}</div>
+      <b class="js-total-cta">P{{ "{:,.2f}".format(estimated_total) }}</b>
+    </div>
+    <a class="shop-cart-cta-btn" href="{{ url_for('checkout_page') }}">Checkout &#9656;</a>
+  </div>
+  </div>{# /shop-cart-side #}
+  </div>{# /shop-cart-grid #}
+
+  {% else %}
+  <section class="shop-cart-empty">
+    <div class="shop-cart-empty-ic">🛒</div>
+    <h2>Your cart is empty</h2>
+    <p>Browse the shelves to add items. Variable-weight fresh items will still be
+       confirmed by staff during fulfillment.</p>
+    <a class="shop-cart-cta-btn" href="{{ url_for('home') }}">Start shopping</a>
+  </section>
+  {% endif %}
+
+  {# ===== Sticky bottom nav (mobile only) — re-uses homepage's design ===== #}
+  <nav class="shop-cart-bnav" aria-label="Primary shop navigation">
+    <a class="shop-cart-bnav-item" href="{{ url_for('home') }}">
+      <span class="shop-cart-bnav-e">🏠</span>Home
+    </a>
+    <a class="shop-cart-bnav-item" href="{{ url_for('home') }}#shop-home-cat-toggle">
+      <span class="shop-cart-bnav-e">📂</span>Browse
+    </a>
+    <a class="shop-cart-bnav-item" href="{{ url_for('search') }}">
+      <span class="shop-cart-bnav-e">🔍</span>Search
+    </a>
+    <a class="shop-cart-bnav-item shop-cart-bnav-on shop-cart-bnav-cart" href="{{ url_for('cart_page') }}">
+      <span class="shop-cart-bnav-e">🛒</span>Cart
+      <span class="shop-cart-bnav-ct js-cart-count-bnav js-cart-badge" data-cart-badge{% if not cart_count or cart_count == 0 %} style="display:none"{% endif %}>{{ cart_count or 0 }}</span>
+    </a>
+    {% if customer_logged_in %}
+    <a class="shop-cart-bnav-item" href="https://royalcard.ansonsupermart.com" target="_blank" rel="noopener">
+      <span class="shop-cart-bnav-e">♛</span>Royal
+    </a>
+    {% else %}
+    <a class="shop-cart-bnav-item" href="{{ url_for('customer_login_page') }}">
+      <span class="shop-cart-bnav-e">♛</span>Sign in
+    </a>
+    {% endif %}
+  </nav>
+
 </div>
 
-<section class="list-header">
-    <p class="eyebrow">{% if admin_edit_mode %}Admin edit basket{% else %}Order Request{% endif %}</p>
-    <h1>{% if admin_edit_mode %}Editing {{ admin_edit_request_code }}{% else %}Order request cart{% endif %}</h1>
-    <p class="lede">
-        {% if admin_edit_mode %}
-        This basket is a draft for the admin order edit. Click Save changes to order when done.
-        {% else %}
-        Build a simple order request for internal review. Variable-weight fresh items will still be confirmed by staff during fulfillment.
-        {% endif %}
-    </p>
-</section>
+{# ===== Scoped cart styles ===== #}
 
-{% with messages = get_flashed_messages(with_categories=true) %}
-{% if messages %}
-<section class="section-block flash-stack">
-    {% for category, message in messages %}
-    <div class="flash-message flash-{{ category }}">{{ message }}</div>
-    {% endfor %}
-</section>
-{% endif %}
-{% endwith %}
 
-{% if request_submitted %}
-<section class="section-block">
-    <div class="availability-box">
-        <strong>Order request submitted</strong>
-        <span>Your request code is <strong>{{ request_code }}</strong>. Staff can now review the requested items and confirm fulfillment details. <a href="{{ request_status_url }}">View request status</a>.</span>
-    </div>
-    {% if not customer_logged_in %}
-    <div class="availability-box" style="margin-top: 12px;">
-        <strong>Save your details for next time?</strong>
-        <span>
-            <a href="{{ url_for('customer_register_page') }}">Create an account</a>
-            to track orders, reorder easily, and pre-fill your checkout details.
-        </span>
-    </div>
-    {% endif %}
-</section>
-{% endif %}
+{# ===== Cart page JS — qty stepper + remove (AJAX-aware) ===== #}
+<script>
+(() => {
+  const updateAllCartCounts = (n) => {
+    document.querySelectorAll('.cart-count, .shop-cart-bnav-ct, .shop-home-bnav-ct, .shop-cat-bnav-ct').forEach((el) => {
+      el.textContent = n;
+    });
+  };
 
-<section class="cart-layout">
-    <div class="section-block">
-        <div class="section-heading">
-            <h2>Requested items</h2>
-        </div>
+  const setLineQty = (lineKey, qty) => {
+    const qtyEl = document.querySelector(`.js-cart-qty[data-line-key="${CSS.escape(lineKey)}"]`);
+    if (qtyEl) qtyEl.textContent = qty;
+  };
 
-        {% if cart_items %}
-        <form method="post" action="{{ url_for('update_cart') }}">
-            <input type="hidden" name="next" value="{{ editing_cart_url if editing_request_code else url_for('cart_page') }}">
-            <div class="cart-items">
-                {% for item in cart_items %}
-                <article class="cart-item">
-                    <img src="{{ item.option_photo_url or item.product.photo_url }}" alt="{{ item.product.name }} {{ item.option_label }}" loading="lazy">
-                    <div class="cart-item-main">
-                        <div class="cart-item-brand">{{ item.product.brand or "Unbranded" }}</div>
-                        <a class="cart-item-name" href="{{ url_for('product_page', merkey=item.product.merkey) }}">{{ item.product.name }}</a>
-                        <div class="cart-item-meta">
-                            <span class="cart-option-tag">{{ item.option_label }}</span>
-                            <span>{{ item.product.availability.label }}</span>
-                            {% if item.option_barcode %}<span>Barcode: {{ item.option_barcode }}</span>{% endif %}
-                            <span>P{{ "{:,.2f}".format(item.unit_price) }} each</span>
-                        </div>
-                        <div class="cart-item-note">{{ item.product.fulfillment.note }}</div>
-                    </div>
-                    <div class="cart-item-actions">
-                        <div class="quantity-stepper" aria-label="Quantity selector">
-                            <button class="stepper-btn" type="button" data-step="-1" aria-label="Decrease quantity">-</button>
-                            <input class="stepper-input" id="qty_{{ item.line_key }}" name="qty_{{ item.line_key }}" type="number" min="1" value="{{ item.requested_qty }}" inputmode="numeric">
-                            <button class="stepper-btn" type="button" data-step="1" aria-label="Increase quantity">+</button>
-                        </div>
-                        <div class="cart-item-price">P{{ "{:,.2f}".format(item.line_price) }}</div>
-                        <div class="cart-item-buttons">
-                            <button class="filter-button" type="submit">Update</button>
-                            <button class="cart-remove-btn" type="submit"
-                                    formaction="{{ url_for('remove_from_cart', merkey=item.product.merkey) }}?option={{ item.option_key }}"
-                                    formnovalidate
-                                    aria-label="Remove {{ item.product.name }} from basket">Remove</button>
-                        </div>
-                    </div>
-                </article>
-                {% endfor %}
-            </div>
-        </form>
-        {% else %}
-        <p class="empty-state">Your order request cart is empty. You can now add orderable items directly from the product cards or product detail pages.</p>
-        {% endif %}
-    </div>
+  const setLinePrice = (lineKey, formatted) => {
+    const priceEl = document.querySelector(`.js-line-price[data-line-key="${CSS.escape(lineKey)}"]`);
+    if (priceEl) priceEl.textContent = formatted;
+  };
 
-    <div class="section-block cart-summary">
-        <div class="section-heading">
-            <h2>{% if admin_edit_mode %}Admin edit actions{% else %}Submit request{% endif %}</h2>
-        </div>
+  const setTotals = (data) => {
+    if (data.subtotal_formatted) {
+      document.querySelectorAll('.js-subtotal').forEach((el) => { el.textContent = data.subtotal_formatted; });
+    }
+    if (data.total_formatted) {
+      document.querySelectorAll('.js-total, .js-total-cta').forEach((el) => { el.textContent = data.total_formatted; });
+    }
+    if (typeof data.earn_pts === 'number') {
+      document.querySelectorAll('.js-earn-pts').forEach((el) => { el.textContent = data.earn_pts; });
+    }
+    if (typeof data.cart_count === 'number') {
+      updateAllCartCounts(data.cart_count);
+    }
+  };
 
-        <div class="summary-line"><span>Items</span><strong>{{ cart_items|length }}</strong></div>
-        <div class="summary-line"><span>Estimated total</span><strong>P{{ "{:,.2f}".format(estimated_total) }}</strong></div>
-        <p class="summary-note">This is an order request, not a final paid checkout. Staff still review variable-weight items, substitutions, and final totals.</p>
+  const removeLineFromDOM = (lineKey) => {
+    const article = document.querySelector(`.shop-cart-item[data-line-key="${CSS.escape(lineKey)}"]`);
+    if (article) article.remove();
+    // If nothing left, reload so the empty-state renders.
+    if (!document.querySelector('.shop-cart-item')) {
+      window.location.reload();
+    }
+  };
 
-        {% if admin_edit_mode %}
-        <form method="post" action="{{ url_for('admin_edit_cart_page', request_code=admin_edit_request_code) }}" class="checkout-form">
-            <button class="primary-cta" type="submit" {% if not cart_items %}disabled{% endif %}>Save changes to order</button>
-            <a class="filter-button" style="text-align:center;text-decoration:none;" href="{{ url_for('home') }}">Add more items</a>
-            <a class="header-link-secondary" href="{{ url_for('admin_order_detail_page', request_code=admin_edit_request_code) }}">Back to admin order</a>
-        </form>
-        <p class="summary-note">Back to admin order does not save. Use Save changes to order to apply this edit basket.</p>
-        {% elif cart_items and not customer_logged_in %}
-        <div class="availability-box" style="margin:16px 0; background:#fff8ec; border-color:#f0c674;">
-            <strong>Save your details for faster checkout</strong>
-            <span style="display:block; margin-top:6px;">
-                Create an account or sign in to skip this form next time, save your delivery address, and track all your orders in one place.
-            </span>
-            <div style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;">
-                <a class="primary-cta" style="flex:1; min-width:140px; text-align:center; text-decoration:none;"
-                   href="{{ url_for('customer_register_page', next=url_for('cart_page')) }}">Create account</a>
-                <a class="filter-button" style="flex:1; min-width:140px; text-align:center; text-decoration:none;"
-                   href="{{ url_for('customer_login_page', next=url_for('cart_page')) }}">Sign in</a>
-            </div>
-            <span style="display:block; margin-top:10px; font-size:0.9em; color:#666;">Or continue as a guest below — no signup required.</span>
-        </div>
-        {% endif %}
+  const postQtyUpdate = async (lineKey, newQty) => {
+    const formData = new FormData();
+    formData.append(`qty_${lineKey}`, newQty);
+    try {
+      const response = await fetch('{{ url_for("update_cart") }}', {
+        method: 'POST',
+        headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' },
+        body: formData,
+      });
+      const data = await response.json();
+      if (!response.ok || !data.ok) throw new Error('Update failed');
+      setTotals(data);
+      const lineTotal = data.line_totals && data.line_totals[lineKey];
+      if (lineTotal) {
+        setLineQty(lineKey, lineTotal.qty);
+        setLinePrice(lineKey, lineTotal.line_price_formatted);
+      } else {
+        // qty was set to 0 -> server removed the line
+        removeLineFromDOM(lineKey);
+      }
+    } catch (err) {
+      window.alert('Could not update quantity. Please refresh.');
+    }
+  };
 
-        {% if not admin_edit_mode %}
-        <form method="post" action="{{ url_for('cart_page') }}" class="checkout-form">
-            <label for="customer_name">Customer name</label>
-            <input id="customer_name" name="customer_name" type="text" value="{{ form_data.customer_name or '' }}" required>
+  document.addEventListener('click', (event) => {
+    const stepBtn = event.target.closest('.js-cart-step');
+    if (stepBtn) {
+      const stepperEl = stepBtn.closest('.shop-cart-stepper');
+      if (!stepperEl) return;
+      const lineKey = stepperEl.dataset.lineKey;
+      const qtyEl = stepperEl.querySelector('.js-cart-qty');
+      const current = parseInt(qtyEl.textContent || '1', 10) || 1;
+      const step = parseInt(stepBtn.dataset.step || '0', 10) || 0;
+      const newQty = current + step;
+      if (newQty < 1) {
+        // Treat as remove
+        const article = stepBtn.closest('.shop-cart-item');
+        const removeBtn = article && article.querySelector('.js-cart-remove');
+        if (removeBtn) removeBtn.click();
+        return;
+      }
+      qtyEl.textContent = newQty;
+      postQtyUpdate(lineKey, newQty);
+      return;
+    }
 
-            <label for="contact_number">Contact number</label>
-            <input id="contact_number" name="contact_number" type="text" value="{{ form_data.contact_number or '' }}" required>
-
-            <label for="contact_email">Email (optional)</label>
-            <input id="contact_email" name="contact_email" type="email" value="{{ form_data.contact_email or '' }}">
-
-            <label for="fulfillment_method">Pickup or delivery</label>
-            <select id="fulfillment_method" name="fulfillment_method" required>
-                <option value="">Choose one</option>
-                <option value="pickup" {% if form_data.fulfillment_method == 'pickup' %}selected{% endif %}>Store pickup</option>
-                <option value="delivery" {% if form_data.fulfillment_method == 'delivery' %}selected{% endif %}>Delivery</option>
-            </select>
-
-            <label for="preferred_schedule">Preferred schedule</label>
-            <input id="preferred_schedule" name="preferred_schedule" type="text" value="{{ form_data.preferred_schedule or '' }}" placeholder="Example: Today after 5 PM or Tomorrow morning">
-
-            <label for="location_details">Pickup branch or delivery address</label>
-            <textarea id="location_details" name="location_details" rows="3" placeholder="Branch for pickup, or full delivery address..." required>{{ form_data.location_details or '' }}</textarea>
-
-            <label for="fulfillment_notes">Notes for staff</label>
-            <textarea id="fulfillment_notes" name="fulfillment_notes" rows="5" placeholder="Preferred replacements, timing, special instructions...">{{ form_data.fulfillment_notes or '' }}</textarea>
-
-            <button class="primary-cta" type="submit" {% if not cart_items %}disabled{% endif %}>
-                {% if editing_request_code %}Save changes to {{ editing_request_code }}{% else %}Submit order request{% endif %}
-            </button>
-        </form>
-        {% endif %}
-    </div>
-</section>
+    const removeBtn = event.target.closest('.js-cart-remove');
+    if (removeBtn) {
+      event.preventDefault();
+      const lineKey = removeBtn.dataset.lineKey;
+      const form = removeBtn.closest('.shop-cart-remove-form');
+      if (!form) return;
+      (async () => {
+        try {
+          const response = await fetch(form.action, {
+            method: 'POST',
+            headers: { 'X-Requested-With': 'XMLHttpRequest', 'Accept': 'application/json' },
+            body: new FormData(form),
+          });
+          const data = await response.json();
+          if (!response.ok || !data.ok) throw new Error('Remove failed');
+          setTotals(data);
+          removeLineFromDOM(lineKey);
+        } catch (err) {
+          // Fall back to the standard form post
+          form.submit();
+        }
+      })();
+    }
+  });
+})();
+</script>
 
 {% endblock %}

@@ -1,233 +1,728 @@
 {% extends "base.html" %}
 
-{% block title %}{{ order_request.request_code }} | Order Request Status{% endblock %}
+
+{% block extra_head %}
+<style>
+    :root {
+        --rc-red: #c0102e;
+        --rc-ink: #1d1d28;
+        --rc-mut: #82828c;
+        --rc-line: #ececf2;
+        --rc-shelf: #f5f5f8;
+        --rc-gold: #cc8a18;
+        --rc-ok: #2f7a3d;
+    }
+    .rc-page { max-width: 100%; margin: 12px auto 32px; padding: 0 4px; }
+    @media (min-width: 641px)  { .rc-page { max-width: 760px; padding: 0 14px; } }
+    @media (min-width: 1024px) { .rc-page { max-width: 1100px; padding: 0 18px; } }
+    @media (min-width: 1440px) { .rc-page { max-width: 1320px; } }
+    /* Don't let the alert + sub-cards stretch beyond reading width on wide screens —
+       full-bleed substitution cards look weird when they're 1300px across. */
+    @media (min-width: 1024px) {
+        .rc-page .rc-alert,
+        .rc-page .rc-subcard,
+        .rc-page .rc-statuscard,
+        .rc-page .rc-card { max-width: 900px; margin-left: auto; margin-right: auto; }
+    }
+    .rc-card {
+        background: #fff; border: 1px solid var(--rc-line); border-radius: 14px;
+        box-shadow: 0 6px 18px rgba(20, 10, 30, .04);
+    }
+    .rc-stack > * + * { margin-top: 14px; }
+
+    /* Banner / status card */
+    .rc-statuscard {
+        padding: 18px 18px 16px;
+        background: linear-gradient(160deg, #fff, #fff4f6);
+        border: 1px solid var(--rc-line); border-radius: 14px;
+        box-shadow: 0 6px 18px rgba(20, 10, 30, .05);
+    }
+    .rc-statuscard.is-paused { background: #f6f6f9; }
+    .rc-statuscard.is-cancelled { background: #fbeaec; border-color: #e9b6bf; }
+    .rc-statuscard .rc-lbl {
+        font-size: 11px; letter-spacing: .18em; text-transform: uppercase;
+        color: var(--rc-red); font-weight: 700;
+    }
+    .rc-statuscard.is-paused .rc-lbl { color: var(--rc-mut); }
+    .rc-statuscard h2 {
+        font-family: Georgia, "Times New Roman", serif;
+        margin: 4px 0 4px; font-size: 24px; line-height: 1.2; color: var(--rc-ink);
+    }
+    .rc-statuscard .rc-when { color: var(--rc-mut); font-size: 13.5px; margin-bottom: 14px; }
+
+    /* Stepper */
+    .rc-steps { display: flex; align-items: flex-start; gap: 0; padding-top: 4px; }
+    .rc-steps .s {
+        flex: 1; display: flex; flex-direction: column; align-items: center;
+        gap: 6px; position: relative;
+    }
+    .rc-steps .s::after {
+        content: ""; position: absolute; left: 50%; right: -50%; top: 10px;
+        height: 2px; background: #e0e0e8; z-index: 0;
+    }
+    .rc-steps .s:last-child::after { display: none; }
+    .rc-steps .s.done::after { background: var(--rc-red); }
+    .rc-steps .dot {
+        width: 20px; height: 20px; border-radius: 50%; background: #fff;
+        border: 2px solid #d0d0db; z-index: 1; display: inline-flex;
+        align-items: center; justify-content: center; font-size: 11px; color: #fff;
+        font-weight: 700;
+    }
+    .rc-steps .s.done .dot { background: var(--rc-red); border-color: var(--rc-red); }
+    .rc-steps .s.now .dot {
+        background: #fff; border-color: var(--rc-red);
+        box-shadow: 0 0 0 4px rgba(192, 16, 46, .18);
+        position: relative;
+    }
+    .rc-steps .s.now .dot::after {
+        content: ""; width: 10px; height: 10px; background: var(--rc-red);
+        border-radius: 50%;
+    }
+    .rc-steps .lbl2 {
+        font-size: 10px; color: var(--rc-mut); font-weight: 600;
+        text-align: center; line-height: 1.25; max-width: 80px;
+    }
+    .rc-steps .s.done .lbl2, .rc-steps .s.now .lbl2 { color: var(--rc-ink); }
+    .rc-steps .s.now .lbl2 { color: var(--rc-red); }
+
+    /* Sections */
+    .rc-section { padding: 16px 18px; }
+    .rc-section h4 {
+        margin: 0 0 10px; font-size: 12px; color: var(--rc-mut);
+        letter-spacing: .08em; text-transform: uppercase; font-weight: 700;
+    }
+    .rc-kvgrid {
+        display: grid; grid-template-columns: auto 1fr; gap: 8px 16px;
+        font-size: 13.5px;
+    }
+    .rc-kvgrid .k { color: var(--rc-mut); }
+    .rc-kvgrid .v { font-weight: 600; color: var(--rc-ink); }
+    .rc-kvgrid .v.royal { color: var(--rc-red); }
+
+    /* Substitution / confirmation alert */
+    .rc-alert {
+        background: #fff7e6; border: 1px solid #f0dca8; border-radius: 12px;
+        padding: 14px 16px 14px 52px; position: relative;
+    }
+    .rc-alert::before {
+        content: "!"; position: absolute; left: 16px; top: 14px;
+        width: 24px; height: 24px; border-radius: 50%; background: var(--rc-gold);
+        color: #fff; font-weight: 800; display: inline-flex;
+        align-items: center; justify-content: center; font-size: 14px;
+    }
+    .rc-alert .ttl { font-size: 14px; font-weight: 700; color: #6b541a; }
+    .rc-alert .sub { font-size: 12.5px; color: #6b541a; opacity: .85; margin-top: 3px; }
+
+    .rc-subcard {
+        background: #fff; border: 1px solid var(--rc-line); border-radius: 12px;
+        padding: 14px 16px;
+    }
+    .rc-subcard + .rc-subcard { margin-top: 10px; }
+    .rc-subrow { display: flex; gap: 12px; align-items: flex-start; padding: 6px 0; }
+    .rc-subrow .ph {
+        width: 44px; height: 44px; background: var(--rc-shelf); border-radius: 8px;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 22px; flex-shrink: 0; overflow: hidden;
+    }
+    .rc-subrow .ph img { width: 100%; height: 100%; object-fit: cover; }
+    .rc-subrow .info { flex: 1; min-width: 0; }
+    .rc-subrow .info .nm { font-size: 13.5px; line-height: 1.35; color: var(--rc-ink); }
+    .rc-subrow .info .sub { font-size: 11.5px; color: var(--rc-mut); margin-top: 2px; }
+    .rc-subrow .info .tag {
+        display: inline-block; font-size: 10px; padding: 2px 8px; border-radius: 8px;
+        margin-top: 5px; font-weight: 700; letter-spacing: .05em;
+    }
+    .rc-subrow .info .tag.orig { background: #f0f0f4; color: var(--rc-mut); }
+    .rc-subrow .info .tag.removed { background: #fbeaec; color: var(--rc-red); }
+
+    .rc-removed-explainer {
+        text-align: center; color: var(--rc-mut); font-size: 11.5px;
+        margin: 6px 0 4px;
+    }
+    .rc-note-quote {
+        background: var(--rc-shelf); padding: 10px 12px; border-radius: 8px;
+        font-size: 12.5px; color: #52525e; margin-top: 10px; line-height: 1.5;
+    }
+    .rc-note-quote i { color: var(--rc-ink); }
+
+    .rc-btnrow { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
+    .rc-btn {
+        flex: 1 1 130px; text-align: center; padding: 12px 12px; border-radius: 10px;
+        font-size: 13px; font-weight: 700; border: 0; cursor: pointer;
+        text-decoration: none; display: inline-flex; align-items: center;
+        justify-content: center; line-height: 1.2; font-family: inherit;
+    }
+    .rc-btn.primary { background: var(--rc-red); color: #fff; }
+    .rc-btn.primary:hover { background: #a30d27; }
+    .rc-btn.ghost { background: #fff; border: 1px solid var(--rc-line); color: var(--rc-ink); }
+    .rc-btn.ghost:hover { background: var(--rc-shelf); }
+
+    /* Items list */
+    .rc-itemrow {
+        display: flex; gap: 12px; padding: 11px 0; align-items: center;
+        border-bottom: 1px solid var(--rc-line);
+    }
+    .rc-itemrow:last-child { border-bottom: none; }
+    .rc-itemrow .ph {
+        width: 42px; height: 42px; background: var(--rc-shelf); border-radius: 7px;
+        display: inline-flex; align-items: center; justify-content: center;
+        font-size: 20px; flex-shrink: 0; overflow: hidden;
+    }
+    .rc-itemrow .ph img { width: 100%; height: 100%; object-fit: cover; }
+    .rc-itemrow .info { flex: 1; min-width: 0; font-size: 13.5px; color: var(--rc-ink); }
+    .rc-itemrow .info small {
+        display: block; color: var(--rc-mut); font-size: 11.5px; margin-top: 2px;
+    }
+    .rc-itemrow .pr { font-family: Georgia, serif; font-weight: 700; font-size: 14px; color: var(--rc-ink); }
+    .rc-removed-list .rc-itemrow { opacity: .65; }
+    .rc-removed-list .rc-itemrow .info { text-decoration: line-through; text-decoration-thickness: 1px; }
+    .rc-removed-list .rc-itemrow .info small { text-decoration: none; color: var(--rc-red); }
+
+    /* Help / message-us */
+    .rc-help {
+        background: #f6f6f9; padding: 14px 16px; border-radius: 10px;
+        display: flex; gap: 12px; align-items: center; font-size: 13px;
+        color: var(--rc-ink);
+    }
+    .rc-help .ic {
+        width: 34px; height: 34px; background: #fff; color: var(--rc-red);
+        border-radius: 8px; display: inline-flex; align-items: center;
+        justify-content: center; font-size: 17px; flex-shrink: 0;
+    }
+    .rc-help b { color: var(--rc-red); }
+    .rc-help-links { margin-top: 6px; display: flex; gap: 12px; flex-wrap: wrap; font-size: 12.5px; }
+    .rc-help-links a { color: var(--rc-red); text-decoration: none; font-weight: 600; }
+    .rc-help-links a:hover { text-decoration: underline; }
+
+    /* Header */
+    .rc-header { padding: 4px 4px 14px; }
+    .rc-header .crumbs { font-size: 12px; color: var(--rc-mut); }
+    .rc-header .crumbs a { color: var(--rc-mut); text-decoration: none; }
+    .rc-header .crumbs a:hover { color: var(--rc-ink); }
+    .rc-header h1 {
+        font-family: Georgia, serif; font-size: 22px; margin: 8px 0 2px;
+        color: var(--rc-ink);
+    }
+    .rc-header .when { font-size: 13px; color: var(--rc-mut); }
+
+    /* Flash stack */
+    .rc-flash { padding: 11px 14px; border-radius: 10px; font-size: 13px; }
+    .rc-flash.success { background: #e7f3eb; color: var(--rc-ok); border: 1px solid #c5e3cd; }
+    .rc-flash.error { background: #fbeaec; color: var(--rc-red); border: 1px solid #e9b6bf; }
+    .rc-flash + .rc-flash { margin-top: 6px; }
+
+    /* Cancelled banner */
+    .rc-cancelled {
+        padding: 18px; background: #fbeaec; border: 1px solid #e9b6bf;
+        border-radius: 14px; color: var(--rc-red);
+    }
+    .rc-cancelled h2 { font-family: Georgia, serif; margin: 0 0 6px; font-size: 22px; }
+
+    /* Below-the-fold blocks reuse storefront.css; keep them readable on phone */
+    .rc-belowfold { margin-top: 22px; }
+    .rc-belowfold .section-block { background: #fff; }
+    @media (max-width: 480px) {
+        .rc-page { padding: 0; }
+        .rc-statuscard h2 { font-size: 20px; }
+        .rc-steps .lbl2 { font-size: 9.5px; }
+    }
+</style>
+{% endblock %}
+{% block title %}{{ order_request.request_code }} | Order Status{% endblock %}
 
 {% block content %}
-<nav class="breadcrumbs" aria-label="Breadcrumb">
-    {% for crumb in breadcrumbs %}
-    {% if crumb.url %}<a href="{{ crumb.url }}">{{ crumb.label }}</a>
-    {% else %}<span>{{ crumb.label }}</span>{% endif %}
-    {% endfor %}
-</nav>
+{# ---------------------------------------------------------------------------
+   Customer-facing single-order status page (Milestone 2).
+   Visual reference: RoyalCard/mockups/shop_order_status.html
+   Phone-card aesthetic, white panels, ANSON red accents.
+   Scoped CSS lives in this template so we don't touch storefront.css.
+   --------------------------------------------------------------------------- #}
 
-<div class="page-actions">
-    <a class="back-link" href="{{ url_for('home') }}" onclick="return storefrontGoBack('{{ url_for('home') }}')">← Back</a>
-</div>
 
-{% with messages = get_flashed_messages(with_categories=true) %}
-{% if messages %}
-<section class="section-block flash-stack">
-    {% for category, message in messages %}
-    <div class="flash-message flash-{{ category }}">{{ message }}</div>
-    {% endfor %}
-</section>
-{% endif %}
-{% endwith %}
-
-<section class="list-header">
-    <p class="eyebrow">Order Request Status</p>
-    <h1>{{ order_request.request_code }}</h1>
-    <p class="lede">This page shows the current internal review status of your request.</p>
-    {% if customer_can_edit %}
-    <p class="summary-note" style="margin-top:10px;">You can still edit this request while it is in the <strong>New</strong> stage.</p>
-    {% endif %}
-    {% if customer_can_cancel or customer_can_delete %}
-    <div class="admin-contact-links" style="margin-top:12px;">
-        {% if customer_can_edit %}
-        <a class="header-link-secondary" href="#edit-request">Edit request</a>
-        {% endif %}
-        {% if customer_can_cancel %}
-        <form method="post" action="{{ url_for('manage_order_request_page', request_code=order_request.request_code) }}" onsubmit="return confirm('Cancel this order request?')">
-            <input type="hidden" name="customer_action" value="cancel">
-            <button class="header-link-secondary" type="submit">Cancel request</button>
-        </form>
-        {% endif %}
-        {% if customer_can_delete %}
-        <form method="post" action="{{ url_for('manage_order_request_page', request_code=order_request.request_code) }}" onsubmit="return confirm('Delete this order request? This removes it from the system.')">
-            <input type="hidden" name="customer_action" value="delete">
-            <button class="header-link-secondary" type="submit">Delete request</button>
-        </form>
-        {% endif %}
-    </div>
-    {% endif %}
-    {% if reorder_url is defined and reorder_url %}
-    <div style="margin-top:12px;">
-        <form method="post" action="{{ reorder_url }}" style="display:inline;">
-            <button type="submit" class="secondary-cta">Reorder these items</button>
-        </form>
-    </div>
-    {% endif %}
-</section>
-
-{% if order_request.confirmed_at %}
-<section class="section-block">
-    <div class="availability-box">
-        <strong>Reviewed order confirmed</strong>
-        <span>
-            Your reviewed order was confirmed on {{ order_request.confirmed_at }}.
-            Final reviewed total: <strong>P{{ "{:,.2f}".format(order_request.confirmed_total or estimated_total) }}</strong>.
-            {% if order_request.customer_confirmation_note %}{{ order_request.customer_confirmation_note }}{% endif %}
-        </span>
-    </div>
-</section>
+{# Pre-compute the step status for the stepper. #}
+{% set canon = order_request.canonical_status or 'NEW' %}
+{% set has_pending_subs = (canon == 'AWAITING_CUSTOMER_CONFIRMATION') and removed_items and not order_request.customer_confirmation_note %}
+{% set step_order = ['NEW', 'REVIEWING', 'PICKING', 'FOR_RELEASE', 'RELEASED'] %}
+{% set step_labels = {'NEW': 'Placed', 'REVIEWING': 'Reviewed', 'PICKING': 'Preparing', 'FOR_RELEASE': 'Ready', 'RELEASED': 'Released'} %}
+{# Map canonical_status to current step index (0-based). #}
+{% if canon == 'NEW' %}{% set current_idx = 0 %}
+{% elif canon == 'REVIEWING' %}{% set current_idx = 1 %}
+{% elif canon == 'PICKING' %}{% set current_idx = 2 %}
+{% elif canon == 'AWAITING_CUSTOMER_CONFIRMATION' %}{% set current_idx = 2 %}
+{% elif canon == 'FOR_RELEASE' %}{% set current_idx = 3 %}
+{% elif canon == 'RELEASED' %}{% set current_idx = 4 %}
+{% else %}{% set current_idx = 0 %}
 {% endif %}
 
-{% if customer_status_message %}
-<section class="section-block">
-    <div class="availability-box">
-        <strong>{{ customer_status_message[0] }}</strong>
-        <span>{{ customer_status_message[1] }}</span>
-    </div>
-</section>
-{% endif %}
+{% set royal_card = linked_royal_card(order_request.customer_id) %}
+{% set points_redeemed = (order_request.points_redeemed or 0) | int %}
+{# Phase C — Earn estimate is based on what the customer actually pays after
+   the Royal Card discount, not the gross subtotal. (Discounted lines aren't
+   eligible for re-earning.) #}
+{% set net_total = (estimated_total - points_redeemed) if (estimated_total > points_redeemed) else 0 %}
+{% set earn_pts = (net_total // 200) | int if royal_card else 0 %}
+{# Live balance shown alongside the earn estimate when available. #}
+{% set member_balance = royal_card_balance(royal_card) if royal_card else None %}
+{# Customer-facing "Message ANSON" links → point at the STORE's handles, not the customer's own number. #}
+{% set contact_links = build_store_contact_links(order_request) %}
 
-{% if customer_can_edit %}
-<section class="section-block" id="edit-request">
-    <div class="section-heading">
-        <h2>Edit request</h2>
-        <p class="lede">Update your details or requested quantities before staff starts reviewing the order.</p>
-    </div>
-    <form method="post" action="{{ url_for('manage_order_request_page', request_code=order_request.request_code) }}" class="checkout-form">
-        <input type="hidden" name="customer_action" value="edit">
+<div class="rc-page">
 
-        <label for="customer_name">Customer name</label>
-        <input id="customer_name" name="customer_name" type="text" value="{{ order_request.customer_name or '' }}" required>
-
-        <label for="contact_number">Contact number</label>
-        <input id="contact_number" name="contact_number" type="text" value="{{ order_request.contact_number or '' }}" required>
-
-        <label for="contact_email">Email (optional)</label>
-        <input id="contact_email" name="contact_email" type="email" value="{{ order_request.contact_email or '' }}">
-
-        <label for="fulfillment_method">Pickup or delivery</label>
-        <select id="fulfillment_method" name="fulfillment_method" required>
-            <option value="">Choose one</option>
-            <option value="pickup" {% if order_request.fulfillment_method == 'pickup' %}selected{% endif %}>Store pickup</option>
-            <option value="delivery" {% if order_request.fulfillment_method == 'delivery' %}selected{% endif %}>Delivery</option>
-        </select>
-
-        <label for="preferred_schedule">Preferred schedule</label>
-        <input id="preferred_schedule" name="preferred_schedule" type="text" value="{{ order_request.preferred_schedule or '' }}">
-
-        <label for="location_details">Pickup branch or delivery address</label>
-        <textarea id="location_details" name="location_details" rows="3" required>{{ order_request.location_details or '' }}</textarea>
-
-        <label for="fulfillment_notes">Notes for staff</label>
-        <textarea id="fulfillment_notes" name="fulfillment_notes" rows="4">{{ order_request.fulfillment_notes or '' }}</textarea>
-
-        <div class="cart-items">
-            {% for item in order_items %}
-            <article class="cart-item cart-item-admin">
-                <div class="cart-item-main">
-                    <div class="cart-item-brand">{{ item.brand or "Unbranded" }}</div>
-                    <div class="cart-item-name">{{ item.product_name }}</div>
-                    <div class="cart-item-meta">
-                        {% if item.order_unit_label %}<span>{{ item.order_unit_label }}</span>{% endif %}
-                        {% if item.pricing_basis %}<span>{{ item.pricing_basis }}</span>{% endif %}
-                    </div>
-                </div>
-                <div class="admin-item-editor">
-                    <label for="item_qty_{{ item.id }}">Qty</label>
-                    <input id="item_qty_{{ item.id }}" name="item_qty_{{ item.id }}" type="number" min="0" value="{{ item.requested_qty }}">
-
-                    <label class="checkbox-row" for="item_remove_{{ item.id }}">
-                        <input id="item_remove_{{ item.id }}" name="item_remove_{{ item.id }}" type="checkbox">
-                        <span>Remove from request</span>
-                    </label>
-                </div>
-            </article>
+    {# Breadcrumbs / title header #}
+    <div class="rc-header">
+        <div class="crumbs">
+            {% for crumb in breadcrumbs %}
+                {% if crumb.url %}<a href="{{ crumb.url }}">{{ crumb.label }}</a>
+                {% else %}<span>{{ crumb.label }}</span>{% endif %}
+                {% if not loop.last %} &rsaquo; {% endif %}
             {% endfor %}
         </div>
+        <h1>Order {{ order_request.request_code }}</h1>
+        <div class="when">Submitted {{ order_request.created_at }}</div>
+    </div>
 
-        <button class="primary-cta" type="submit">Save request changes</button>
-    </form>
-</section>
-{% endif %}
+    {# Flash messages #}
+    {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div class="rc-stack" style="margin-bottom:14px;">
+        {% for category, message in messages %}
+        <div class="rc-flash {{ 'success' if category == 'success' else 'error' }}">{{ message }}</div>
+        {% endfor %}
+    </div>
+    {% endif %}
+    {% endwith %}
 
-<section class="cart-layout">
-    <div class="section-block">
-        <div class="section-heading">
-            <h2>{% if order_request.confirmed_at %}Reviewed items{% else %}Requested items{% endif %}</h2>
+    {% if canon == 'CANCELLED' %}
+    {# Cancelled state — no stepper, just a banner. #}
+    <div class="rc-cancelled">
+        <h2>Order cancelled</h2>
+        <p style="margin:0; font-size:13.5px;">
+            This order was cancelled. If this was a mistake, please message ANSON and we'll help you re-place it.
+        </p>
+    </div>
+    {% else %}
+
+    {# Substitution alert — pinned above stepper when awaiting customer OK on removals. #}
+    {% if has_pending_subs %}
+    <div class="rc-stack" style="margin-bottom:14px;">
+        <div class="rc-alert">
+            <div class="ttl">We need your OK on {{ removed_items|length }} change{{ '' if removed_items|length == 1 else 's' }}</div>
+            <div class="sub">Your picker couldn't get {{ 'this item' if removed_items|length == 1 else 'these items' }}. Approve the removal{{ '' if removed_items|length == 1 else 's' }} so we can finish the rest of your order.</div>
         </div>
-        <div class="cart-items">
-            {% for item in order_items %}
-            <article class="cart-item cart-item-simple">
-                <div class="cart-item-main">
-                    <div class="cart-item-brand">{{ item.brand or "Unbranded" }}</div>
-                    <div class="cart-item-name">{{ item.product_name }}</div>
-                    <div class="cart-item-meta">
-                        <span>Qty {{ item.requested_qty }}</span>
-                        {% if item.order_unit_label %}<span>{{ item.order_unit_label }}</span>{% endif %}
-                        {% if item.pricing_basis %}<span>{{ item.pricing_basis }}</span>{% endif %}
+
+        {% for item in removed_items %}
+        <div class="rc-subcard">
+            <div class="rc-subrow">
+                <div class="ph" {% if not item.display_photo_url %}style="background:#fff7e6"{% endif %}>
+                    {% if item.display_photo_url %}<img src="{{ item.display_photo_url }}" alt="">{% else %}<span>&#x1F6D2;</span>{% endif %}
+                </div>
+                <div class="info">
+                    <div class="nm">{{ item.product_name }}</div>
+                    <div class="sub">
+                        {{ item.requested_qty }} {{ 'pc' if (item.requested_qty or 1) == 1 else 'pcs' }}
+                        {% if item.quoted_price %} &middot; P{{ "{:,.2f}".format((item.requested_qty or 0) * (item.quoted_price or 0)) }}{% endif %}
                     </div>
-                    {% if item.fulfillment_note %}
-                    <div class="cart-item-note">{{ item.fulfillment_note }}</div>
-                    {% endif %}
+                    <span class="tag orig">YOU ORDERED</span>
                 </div>
-                <div class="cart-item-actions">
-                    <div class="cart-item-price">P{{ "{:,.2f}".format(item.quoted_price or 0) }}</div>
+            </div>
+            <div class="rc-removed-explainer">&darr; Couldn't get this &darr;</div>
+            <div class="rc-subrow">
+                <div class="ph" style="background:#fbeaec; color:var(--rc-red);"><span>&#x2715;</span></div>
+                <div class="info">
+                    <div class="nm">We couldn't get this item</div>
+                    <div class="sub">
+                        {% set reason = (item.removal_reason or '').lower() %}
+                        {% if reason == 'out_of_stock' %}Your picker marked it out of stock.
+                        {% elif reason == 'skipped_by_picker' or reason == 'skipped' %}Your picker skipped this one (couldn't find a match).
+                        {% elif item.removal_reason %}{{ item.removal_reason|replace('_', ' ')|capitalize }}.
+                        {% else %}Marked unavailable during picking.
+                        {% endif %}
+                    </div>
+                    <span class="tag removed">REMOVED</span>
                 </div>
-            </article>
+            </div>
+            {% if order_request.fulfillment_notes and loop.first %}
+            <div class="rc-note-quote">
+                &#10003; Your note: <i>&ldquo;{{ order_request.fulfillment_notes }}&rdquo;</i>
+            </div>
+            {% endif %}
+            {% if loop.last %}
+            <form method="post" action="{{ url_for('manage_order_request_page', request_code=order_request.request_code) }}" class="rc-btnrow">
+                <input type="hidden" name="customer_action" value="customer_confirm">
+                {% if contact_links.viber_chat %}
+                <a class="rc-btn ghost" href="{{ contact_links.viber_chat }}">Message us</a>
+                {% elif contact_links.mailto %}
+                <a class="rc-btn ghost" href="{{ contact_links.mailto }}">Message us</a>
+                {% else %}
+                <a class="rc-btn ghost" href="#message-anson">Message us</a>
+                {% endif %}
+                <button type="submit" class="rc-btn primary">Approve removal{{ '' if removed_items|length == 1 else 's' }} &#10003;</button>
+            </form>
+            {% endif %}
+        </div>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    {# Status card with stepper. #}
+    <div class="rc-statuscard {{ 'is-paused' if has_pending_subs else '' }}">
+        <div class="rc-lbl">Status</div>
+        {% if has_pending_subs %}
+        <h2 style="font-size:20px;">Paused for your reply</h2>
+        <div class="rc-when">Picking continues once you approve the change{{ '' if removed_items|length == 1 else 's' }} above.</div>
+        {% elif canon == 'RELEASED' %}
+        <h2>Released</h2>
+        <div class="rc-when">Your order has been released. Thank you!</div>
+        {% elif canon == 'FOR_RELEASE' %}
+        <h2>Ready for {{ (order_request.fulfillment_method or 'release')|replace('_', ' ')|capitalize }}</h2>
+        <div class="rc-when">{% if order_request.preferred_schedule %}Window: {{ order_request.preferred_schedule }}{% else %}Come by anytime today.{% endif %}</div>
+        {% elif canon == 'PICKING' %}
+        <h2>Being prepared</h2>
+        <div class="rc-when">{% if order_request.preferred_schedule %}Estimated ready &middot; {{ order_request.preferred_schedule }}{% else %}Our staff is walking the aisles for you now.{% endif %}</div>
+        {% elif canon == 'REVIEWING' %}
+        <h2>Reviewing your order</h2>
+        <div class="rc-when">A staff member is checking availability and prices.</div>
+        {% elif canon == 'AWAITING_CUSTOMER_CONFIRMATION' %}
+        <h2>Awaiting your confirmation</h2>
+        <div class="rc-when">Please confirm the reviewed details below to continue.</div>
+        {% else %}
+        <h2>Order placed</h2>
+        <div class="rc-when">Thanks! We'll start reviewing your order shortly.</div>
+        {% endif %}
+
+        <div class="rc-steps" aria-label="Order progress">
+            {% for step_key in step_order %}
+                {% set idx = loop.index0 %}
+                {% set cls = 'done' if idx < current_idx else ('now' if idx == current_idx else '') %}
+                {# Mark the last step also as 'done' (not 'now') when canon is RELEASED. #}
+                {% if canon == 'RELEASED' and idx == current_idx %}{% set cls = 'done' %}{% endif %}
+                <div class="s {{ cls }}">
+                    <div class="dot">{% if cls == 'done' %}&#10003;{% endif %}</div>
+                    <div class="lbl2">
+                        {% if has_pending_subs and idx == 2 %}Awaiting<br>your OK
+                        {% else %}{{ step_labels[step_key] }}{% endif %}
+                    </div>
+                </div>
             {% endfor %}
         </div>
+    </div>
+
+    {# Pickup / delivery details section #}
+    <div class="rc-card rc-section" style="margin-top:14px;">
+        <h4>{% if (order_request.fulfillment_method or '')|lower == 'delivery' %}Delivery details{% else %}Pickup details{% endif %}</h4>
+        <div class="rc-kvgrid">
+            <div class="k">Method</div>
+            <div class="v">
+                {% if (order_request.fulfillment_method or '')|lower == 'delivery' %}Delivery
+                {% elif (order_request.fulfillment_method or '')|lower == 'pickup' %}Pickup at ANSON Banawe
+                {% else %}{{ (order_request.fulfillment_method or 'Not yet set')|replace('_', ' ')|capitalize }}{% endif %}
+            </div>
+
+            {% if order_request.location_details %}
+            <div class="k">{% if (order_request.fulfillment_method or '')|lower == 'delivery' %}Address{% else %}Branch{% endif %}</div>
+            <div class="v">{{ order_request.location_details }}</div>
+            {% endif %}
+
+            {% if order_request.preferred_schedule %}
+            <div class="k">Window</div>
+            <div class="v">{{ order_request.preferred_schedule }}</div>
+            {% endif %}
+
+            <div class="k">Payment</div>
+            <div class="v">
+                {# Phase C — show subtotal / discount / total separately when
+                   a redemption is attached, so the customer sees exactly
+                   what the discount line did to their total. #}
+                {% set display_total = order_request.confirmed_total or net_total or estimated_total %}
+                {% if order_request.payment_status == 'PAID' %}Paid &middot; P{{ "{:,.2f}".format(display_total) }}
+                {% elif order_request.payment_status == 'PAYMENT_SUBMITTED' %}Submitted, awaiting verification
+                {% else %}Pay at counter &middot; P{{ "{:,.2f}".format(display_total) }}{% endif %}
+                {% if points_redeemed > 0 %}
+                <div style="font-size:11.5px; color:#7a7a86; margin-top:2px;">
+                    Subtotal P{{ "{:,.2f}".format(estimated_total) }}
+                    &middot; <span style="color:var(--rc-red,#C0102E); font-weight:600;">&minus; P{{ "{:,.0f}".format(points_redeemed) }} Royal Card</span>
+                </div>
+                {% endif %}
+            </div>
+
+            {% if royal_card %}
+            <div class="k">Royal Card</div>
+            <div class="v royal">
+                {% if points_redeemed > 0 %}
+                &#9733; Redeemed {{ "{:,}".format(points_redeemed) }} pt{{ '' if points_redeemed == 1 else 's' }}
+                {% if earn_pts > 0 %}&middot; Will earn ~{{ earn_pts }} pt{{ '' if earn_pts == 1 else 's' }}{% endif %}
+                {% else %}
+                &#9733; Will earn ~{{ earn_pts }} pt{{ '' if earn_pts == 1 else 's' }}
+                {% endif %}
+                {% if member_balance is not none %}
+                <div style="font-size:11.5px; color:#7a7a86; margin-top:2px;">
+                    Current balance: {{ "{:,}".format(member_balance) }} pts
+                </div>
+                {% endif %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    {# Items list #}
+    {% set item_total_qty = order_items|sum(attribute='requested_qty') %}
+    <div class="rc-card rc-section" style="margin-top:14px;">
+        <h4>{{ order_items|length }} item{{ '' if order_items|length == 1 else 's' }} &middot; P{{ "{:,.2f}".format(estimated_total) }}</h4>
+        {% for item in order_items %}
+        <div class="rc-itemrow">
+            <div class="ph">
+                {% if item.display_photo_url %}<img src="{{ item.display_photo_url }}" alt="">{% else %}<span>&#x1F6D2;</span>{% endif %}
+            </div>
+            <div class="info">
+                {{ item.product_name }}
+                <small>{{ item.requested_qty }} &times; P{{ "{:,.2f}".format(item.quoted_price or 0) }}{% if item.selling_option_label %} &middot; {{ item.selling_option_label }}{% endif %}</small>
+            </div>
+            <div class="pr">P{{ "{:,.2f}".format((item.requested_qty or 0) * (item.quoted_price or 0)) }}</div>
+        </div>
+        {% endfor %}
 
         {% if removed_items %}
-        <div class="section-heading" style="margin-top:20px;">
-            <h2>Unavailable or removed items</h2>
-        </div>
-        <div class="cart-items">
+        <h4 style="margin-top:18px;">Removed by staff</h4>
+        <div class="rc-removed-list">
             {% for item in removed_items %}
-            <article class="cart-item cart-item-simple cart-item-removed">
-                <div class="cart-item-main">
-                    <div class="cart-item-brand">{{ item.brand or "Unbranded" }}</div>
-                    <div class="cart-item-name">{{ item.product_name }}</div>
-                    <div class="cart-item-meta">
-                        <span>Removed from this request</span>
-                    </div>
+            <div class="rc-itemrow">
+                <div class="ph">
+                    {% if item.display_photo_url %}<img src="{{ item.display_photo_url }}" alt="">{% else %}<span>&#x1F6D2;</span>{% endif %}
                 </div>
-                <div class="cart-item-actions">
-                    <div class="cart-item-price">P{{ "{:,.2f}".format(item.quoted_price or 0) }}</div>
+                <div class="info">
+                    {{ item.product_name }}
+                    <small>
+                        {% set reason = (item.removal_reason or '').lower() %}
+                        {% if reason == 'out_of_stock' %}Out of stock
+                        {% elif reason == 'skipped_by_picker' or reason == 'skipped' %}Skipped by picker
+                        {% elif item.removal_reason %}{{ item.removal_reason|replace('_', ' ')|capitalize }}
+                        {% else %}Removed{% endif %}
+                    </small>
                 </div>
-            </article>
+                <div class="pr" style="color:var(--rc-mut); font-weight:600;">&mdash;</div>
+            </div>
             {% endfor %}
         </div>
         {% endif %}
     </div>
 
-    <div class="section-block cart-summary">
+    {# Message-us card #}
+    <div class="rc-help" id="message-anson" style="margin-top:14px;">
+        <div class="ic">&#128172;</div>
+        <div>
+            Need to make a change?<br>
+            <b>Message ANSON</b> on Viber / Messenger
+            <div class="rc-help-links">
+                {% if contact_links.viber_chat %}<a href="{{ contact_links.viber_chat }}">Viber</a>{% endif %}
+                {% if contact_links.messenger %}<a href="{{ contact_links.messenger }}" target="_blank" rel="noopener">Messenger</a>{% endif %}
+                {% if contact_links.whatsapp %}<a href="{{ contact_links.whatsapp }}">WhatsApp</a>{% endif %}
+                {% if contact_links.mailto %}<a href="{{ contact_links.mailto }}">Email</a>{% endif %}
+                {% if contact_links.phone_intl %}<a href="tel:{{ contact_links.phone_intl }}">Call</a>{% endif %}
+            </div>
+        </div>
+    </div>
+
+    {% endif %} {# end not-cancelled branch #}
+
+</div>
+
+{# ---------------------------------------------------------------------------
+   Below-the-fold: keep the existing payment + edit + summary blocks so the
+   payment flow (Phase 1) still works. Hidden when the order is cancelled.
+   --------------------------------------------------------------------------- #}
+{% if canon != 'CANCELLED' %}
+<div class="rc-belowfold">
+
+    {% if order_request.confirmed_at %}
+    <section class="section-block">
+        <div class="availability-box">
+            <strong>Reviewed order confirmed</strong>
+            <span>
+                Your reviewed order was confirmed on {{ order_request.confirmed_at }}.
+                Final reviewed total: <strong>P{{ "{:,.2f}".format(order_request.confirmed_total or estimated_total) }}</strong>.
+                {% if order_request.customer_confirmation_note %}{{ order_request.customer_confirmation_note }}{% endif %}
+            </span>
+        </div>
+    </section>
+    {% endif %}
+
+    {% if customer_status_message and not has_pending_subs %}
+    <section class="section-block">
+        <div class="availability-box">
+            <strong>{{ customer_status_message[0] }}</strong>
+            <span>{{ customer_status_message[1] }}</span>
+        </div>
+    </section>
+    {% endif %}
+
+    <section class="section-block">
         <div class="section-heading">
-            <h2>Request details</h2>
+            <h2>Payment</h2>
+            <p class="lede">Payment must be verified by staff before pickup, delivery, or release.</p>
+        </div>
+        <div class="summary-line"><span>Status</span><strong>{{ order_request.payment_status_label }}</strong></div>
+        {% if order_request.payment_method %}<div class="summary-line"><span>Method</span><strong>{{ order_request.payment_method_label }}</strong></div>{% endif %}
+        {% if order_request.payment_reference %}<div class="summary-line"><span>Reference</span><strong>{{ order_request.payment_reference }}</strong></div>{% endif %}
+        {% if order_request.payment_proof_path %}<p class="summary-note"><strong>Proof uploaded:</strong> <a href="{{ url_for('payment_proof_file', filename=order_request.payment_proof_path) }}" target="_blank" rel="noopener">View proof</a></p>{% endif %}
+
+        {% if customer_can_submit_payment %}
+        <form method="post" action="{{ url_for('submit_order_payment', request_code=order_request.request_code) }}" enctype="multipart/form-data" class="checkout-form">
+            <p class="summary-note"><strong>Reviewed total:</strong> P{{ "{:,.2f}".format(order_request.confirmed_total or estimated_total) }}</p>
+            <label for="payment_method">Payment method</label>
+            <select id="payment_method" name="payment_method" required>
+                <option value="">Choose payment method</option>
+                {% for method, label in payment_method_options %}
+                <option value="{{ method }}" {% if order_request.payment_method == method %}selected{% endif %}>{{ label }}</option>
+                {% endfor %}
+            </select>
+            <label for="payment_reference">Reference number</label>
+            <input id="payment_reference" name="payment_reference" type="text" value="{{ order_request.payment_reference or '' }}" placeholder="GCash / bank / check reference">
+            <label for="payment_proof">Upload screenshot/photo proof</label>
+            <input id="payment_proof" name="payment_proof" type="file" accept="image/*,.pdf">
+            <label for="payment_note">Payment note (optional)</label>
+            <textarea id="payment_note" name="payment_note" rows="3" placeholder="Example: paid from account ending 1234"></textarea>
+            <button class="primary-cta" type="submit">Confirm order and submit payment</button>
+        </form>
+        {% elif order_request.payment_status == 'PAID' %}
+        <p class="summary-note"><strong>Verified:</strong> Staff has verified your payment.</p>
+        {% elif order_request.payment_status == 'PAYMENT_SUBMITTED' %}
+        <p class="summary-note">Payment proof is waiting for staff verification.</p>
+        {% endif %}
+    </section>
+
+    {% if customer_can_edit or customer_can_cancel or customer_can_delete or (reorder_url is defined and reorder_url) %}
+    <section class="section-block">
+        <div class="section-heading">
+            <h2>Manage this order</h2>
+        </div>
+        {% if customer_can_edit %}
+        <p class="summary-note">You can still edit this request while it is in the <strong>New</strong> stage.</p>
+        <div style="margin-top:10px;">
+            <form method="post" action="{{ url_for('start_editing_order_request', request_code=order_request.request_code) }}" style="display:inline;">
+                <button type="submit" class="primary-cta">Continue shopping &amp; add more items</button>
+            </form>
+        </div>
+        {% endif %}
+        <div class="admin-contact-links" style="margin-top:12px; display:flex; gap:10px; flex-wrap:wrap;">
+            {% if customer_can_edit %}
+            <a class="header-link-secondary" href="#edit-request">Adjust quantities only</a>
+            {% endif %}
+            {% if customer_can_cancel %}
+            <form method="post" action="{{ url_for('manage_order_request_page', request_code=order_request.request_code) }}" onsubmit="return confirm('Cancel this order request?')">
+                <input type="hidden" name="customer_action" value="cancel">
+                <button class="header-link-secondary" type="submit">Cancel request</button>
+            </form>
+            {% endif %}
+            {% if customer_can_delete %}
+            <form method="post" action="{{ url_for('manage_order_request_page', request_code=order_request.request_code) }}" onsubmit="return confirm('Delete this order request? This removes it from the system.')">
+                <input type="hidden" name="customer_action" value="delete">
+                <button class="header-link-secondary" type="submit">Delete request</button>
+            </form>
+            {% endif %}
+            {% if reorder_url is defined and reorder_url %}
+            <form method="post" action="{{ reorder_url }}" style="display:inline;">
+                <button type="submit" class="header-link-secondary">Reorder these items</button>
+            </form>
+            {% endif %}
+        </div>
+    </section>
+    {% endif %}
+
+    {% if customer_can_edit %}
+    <section class="section-block" id="edit-request">
+        <div class="section-heading">
+            <h2>Edit request</h2>
+            <p class="lede">Update your details or requested quantities before staff starts reviewing the order.</p>
+        </div>
+        <form method="post" action="{{ url_for('manage_order_request_page', request_code=order_request.request_code) }}" class="checkout-form">
+            <input type="hidden" name="customer_action" value="edit">
+
+            <label for="customer_name">Customer name</label>
+            <input id="customer_name" name="customer_name" type="text" value="{{ order_request.customer_name or '' }}" required>
+
+            <label for="contact_number">Contact number</label>
+            <input id="contact_number" name="contact_number" type="text" value="{{ order_request.contact_number or '' }}" required>
+
+            <label for="contact_email">Email (optional)</label>
+            <input id="contact_email" name="contact_email" type="email" value="{{ order_request.contact_email or '' }}">
+
+            <label for="fulfillment_method">Pickup or delivery</label>
+            <select id="fulfillment_method" name="fulfillment_method" required>
+                <option value="">Choose one</option>
+                <option value="pickup" {% if order_request.fulfillment_method == 'pickup' %}selected{% endif %}>Store pickup</option>
+                <option value="delivery" {% if order_request.fulfillment_method == 'delivery' %}selected{% endif %}>Delivery</option>
+            </select>
+
+            <label for="preferred_schedule">Preferred schedule</label>
+            <input id="preferred_schedule" name="preferred_schedule" type="text" value="{{ order_request.preferred_schedule or '' }}">
+
+            <label for="location_details">Pickup branch or delivery address</label>
+            <textarea id="location_details" name="location_details" rows="3" required>{{ order_request.location_details or '' }}</textarea>
+
+            <label for="fulfillment_notes">Notes for staff</label>
+            <textarea id="fulfillment_notes" name="fulfillment_notes" rows="4">{{ order_request.fulfillment_notes or '' }}</textarea>
+
+            <div class="cart-items">
+                {% for item in order_items %}
+                <article class="cart-item cart-item-admin">
+                    {% if item.display_photo_url %}
+                    <img class="cart-item-thumb" src="{{ item.display_photo_url }}" alt="{{ item.product_name }}" loading="lazy">
+                    {% endif %}
+                    <div class="cart-item-main">
+                        <div class="cart-item-brand">{{ item.brand or "Unbranded" }}</div>
+                        <div class="cart-item-name">{{ item.product_name }}</div>
+                        <div class="cart-item-meta">
+                            {% if item.selling_option_label %}<span class="cart-option-tag">{{ item.selling_option_label }}</span>{% endif %}
+                            {% if item.order_unit_label %}<span>{{ item.order_unit_label }}</span>{% endif %}
+                            {% if item.pricing_basis %}<span>{{ item.pricing_basis }}</span>{% endif %}
+                            {% if item.selling_option_barcode %}<span>Barcode: {{ item.selling_option_barcode }}</span>{% endif %}
+                        </div>
+                    </div>
+                    <div class="admin-item-editor">
+                        <div class="quantity-stepper" aria-label="Quantity selector">
+                            <button class="stepper-btn" type="button" data-step="-1" aria-label="Decrease quantity">-</button>
+                            <input class="stepper-input" id="item_qty_{{ item.id }}" name="item_qty_{{ item.id }}" type="number" min="1" value="{{ item.requested_qty }}" inputmode="numeric">
+                            <button class="stepper-btn" type="button" data-step="1" aria-label="Increase quantity">+</button>
+                        </div>
+                        <label class="checkbox-row" for="item_remove_{{ item.id }}">
+                            <input id="item_remove_{{ item.id }}" name="item_remove_{{ item.id }}" type="checkbox">
+                            <span>Remove</span>
+                        </label>
+                    </div>
+                </article>
+                {% endfor %}
+            </div>
+
+            <button class="primary-cta" type="submit">Save request changes</button>
+        </form>
+    </section>
+    {% endif %}
+
+    <section class="section-block">
+        <div class="section-heading">
+            <h2>Order details</h2>
         </div>
         <div class="summary-line"><span>Status</span><strong>{{ order_request.status_label }}</strong></div>
+        <div class="summary-line"><span>Payment</span><strong>{{ order_request.payment_status_label }}</strong></div>
         <div class="summary-line"><span>Customer</span><strong>{{ order_request.customer_name }}</strong></div>
         <div class="summary-line"><span>Contact</span><strong>{{ order_request.contact_number }}</strong></div>
         {% if order_request.fulfillment_method %}
         <div class="summary-line"><span>Fulfillment</span><strong>{{ order_request.fulfillment_method.replace('_', ' ').title() }}</strong></div>
-        {% endif %}
-        {% if order_request.preferred_schedule %}
-        <div class="summary-line"><span>Preferred schedule</span><strong>{{ order_request.preferred_schedule }}</strong></div>
         {% endif %}
         <div class="summary-line"><span>Items</span><strong>{{ order_request.item_count }}</strong></div>
         <div class="summary-line"><span>Current estimate</span><strong>P{{ "{:,.2f}".format(estimated_total) }}</strong></div>
         {% if order_request.confirmed_total is not none %}
         <div class="summary-line"><span>Confirmed total</span><strong>P{{ "{:,.2f}".format(order_request.confirmed_total or 0) }}</strong></div>
         {% endif %}
-        <div class="summary-line"><span>Submitted</span><strong>{{ order_request.created_at }}</strong></div>
-        {% if order_request.confirmed_at %}
-        <div class="summary-line"><span>Confirmed at</span><strong>{{ order_request.confirmed_at }}</strong></div>
-        {% endif %}
-        {% if order_request.location_details %}
-        <p class="summary-note"><strong>Pickup or delivery details:</strong> {{ order_request.location_details }}</p>
-        {% endif %}
         {% if order_request.fulfillment_notes %}
         <p class="summary-note"><strong>Your notes:</strong> {{ order_request.fulfillment_notes }}</p>
-        {% endif %}
-        {% if order_request.customer_confirmation_note %}
-        <p class="summary-note"><strong>Confirmation note:</strong> {{ order_request.customer_confirmation_note }}</p>
         {% endif %}
         {% if order_request.internal_note %}
         <p class="summary-note"><strong>Staff note:</strong> {{ order_request.internal_note }}</p>
         {% endif %}
-    </div>
-</section>
+    </section>
+
+</div>
+{% endif %}
+
 {% endblock %}

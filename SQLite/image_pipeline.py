@@ -2,6 +2,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+
 def _try_import_rembg():
     try:
         from rembg import remove  # type: ignore
@@ -15,6 +16,24 @@ class ProcessResult:
     width: int
     height: int
     file_size: int
+
+
+def _find_subject_bbox(img):
+    from PIL import Image, ImageChops
+
+    # First preference: use alpha if the image already has transparency.
+    if "A" in img.getbands():
+        alpha = img.getchannel("A")
+        alpha_bbox = alpha.point(lambda px: 255 if px > 8 else 0).getbbox()
+        if alpha_bbox:
+            return alpha_bbox
+
+    # Fallback: trim near-white borders from opaque images.
+    rgb = img.convert("RGB")
+    bg = Image.new("RGB", rgb.size, (255, 255, 255))
+    diff = Image.eval(ImageChops.difference(rgb, bg), lambda px: 255 if px > 18 else 0)
+    return diff.getbbox()
+
 
 def process_to_white_bg(in_path: str | Path, out_path: str | Path, size: int = 1200, padding_ratio: float = 0.10, try_remove_bg: bool = True) -> ProcessResult:
     from PIL import Image, ImageOps, ImageEnhance, ImageFilter
@@ -34,7 +53,7 @@ def process_to_white_bg(in_path: str | Path, out_path: str | Path, size: int = 1
         except Exception:
             pass
 
-    bbox = img.getbbox()
+    bbox = _find_subject_bbox(img) or img.getbbox()
     if bbox:
         img = img.crop(bbox)
 

@@ -19,8 +19,7 @@ import json
 
 # Configuration
 CONFIG = {
-    'mp_mer_path': r'\\server\share\MP_MER.FPB',  # UPDATE THIS
-    'mp_mer2_path': r'\\server\share\MP_MER2.FPB',  # UPDATE THIS (or None)
+    'mp_mer_path': r'F:\\SSIMS\\MP_MER.FPB',
     'db_path': 'anson_products.db',
     'last_sync_file': '.last_mp_mer_sync.json',
 }
@@ -73,12 +72,10 @@ def save_sync_info(filepath, file_info, last_sync_file):
         json.dump(file_info, f, indent=2)
 
 
-def run_sync(mp_mer_path, mp_mer2_path, db_path):
+def run_sync(mp_mer_path, db_path):
     """Run the sync script"""
     
     cmd = ['python', 'sync_mp_mer.py', mp_mer_path]
-    if mp_mer2_path and os.path.exists(mp_mer2_path):
-        cmd.append(mp_mer2_path)
     
     print("Running sync...")
     print(f"Command: {' '.join(cmd)}")
@@ -99,7 +96,6 @@ def main():
     
     # Check configuration
     mp_mer_path = CONFIG['mp_mer_path']
-    mp_mer2_path = CONFIG['mp_mer2_path']
     last_sync_file = CONFIG['last_sync_file']
     
     print(f"Checking: {mp_mer_path}")
@@ -138,7 +134,7 @@ def main():
     print()
     
     # Run sync
-    success = run_sync(mp_mer_path, mp_mer2_path, CONFIG['db_path'])
+    success = run_sync(mp_mer_path, CONFIG['db_path'])
     
     if success:
         print()

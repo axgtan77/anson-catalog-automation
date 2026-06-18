@@ -28,6 +28,7 @@
     </div>
 
     <form method="post" class="checkout-form auth-form">
+        <input type="hidden" name="next" value="{{ next_target or '' }}">
         <label for="display_name">Your name <span class="required">*</span></label>
         <input id="display_name" name="display_name" type="text" required
                value="{{ form_display_name }}" autocomplete="name">
@@ -56,7 +57,7 @@
 
     <p class="summary-note">
         Already have an account?
-        <a href="{{ url_for('customer_login_page') }}">Sign in here</a>
+        <a href="{{ url_for('customer_login_page', next=next_target) if next_target else url_for('customer_login_page') }}">Sign in here</a>
     </p>
 </section>
 {% endblock %}

@@ -603,7 +603,7 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
         # --- Process + Upload ---
         try:
             result = process_to_white_bg(orig_path, proc_path,
-                                         size=1200, padding_ratio=0.10,
+                                         size=1200, padding_ratio=0.06,
                                          try_remove_bg=remove_bg)
             s3_key = f"{S3_PREFIX}{identifier}.jpg"
             up = upload_file_to_s3(proc_path, key=s3_key, bucket=S3_BUCKET,
@@ -619,9 +619,12 @@ def cmd_run(limit: int | None, dry_run: bool, target_merkey: str | None, remove_
         # --- Update DB ---
         cur.execute("UPDATE images SET is_primary=0 WHERE merkey=? AND is_primary=1", (merkey,))
         cur.execute("""
-            INSERT INTO images(merkey, filename, s3_url, local_path, is_primary,
-                               width, height, file_size, uploaded_at)
-            VALUES(?,?,?,?,1,?,?,?,CURRENT_TIMESTAMP)
+            INSERT INTO images(
+                merkey, filename, s3_url, local_path, is_primary,
+                width, height, file_size, uploaded_at,
+                public_status, public_status_code, public_checked_at, public_error
+            )
+            VALUES(?,?,?,?,1,?,?,?,CURRENT_TIMESTAMP,'ok',200,CURRENT_TIMESTAMP,'Uploaded by photo_enrich')
         """, (merkey, f"{identifier}.jpg", up.url, str(proc_path),
               result.width, result.height, result.file_size))
         cur.execute("""

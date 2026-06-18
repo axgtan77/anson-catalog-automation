@@ -2,6 +2,94 @@
 
 {% block title %}My Account | Anson Supermart{% endblock %}
 
+{% block extra_head %}
+<style>
+  /* Phase C — Royal Card section on profile. Scoped class .rc-prof-* so it
+     never collides with the shop-home / shop-checkout namespaces. */
+  .rc-prof-card {
+    --rc-red: #C0102E; --rc-dark: #6e0a1c; --rc-gold: #b8902b;
+    --rc-line: #ececf1; --rc-mut: #7a7a86;
+    background: linear-gradient(135deg, #fdf6f0, #fff);
+    border: 1px solid #f0d4dc; border-radius: 14px;
+    padding: 18px 18px 14px;
+    box-shadow: 0 6px 16px rgba(110,10,28,.06);
+    margin-bottom: 18px;
+  }
+  .rc-prof-head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin-bottom: 10px;
+  }
+  .rc-prof-head h3 {
+    margin: 0; font-family: Georgia, "Times New Roman", serif;
+    font-size: 18px; color: var(--rc-dark);
+    display: inline-flex; align-items: center; gap: 7px;
+  }
+  .rc-prof-head h3 .crown { color: var(--rc-gold); }
+  .rc-prof-bigbalance {
+    font-family: Georgia, "Times New Roman", serif;
+    font-size: 30px; font-weight: 800;
+    color: var(--rc-red); line-height: 1.1;
+  }
+  .rc-prof-bigbalance .lbl {
+    display: block; font-family: -apple-system, sans-serif;
+    font-size: 10.5px; color: var(--rc-mut);
+    letter-spacing: .08em; text-transform: uppercase;
+    font-weight: 700; margin-bottom: 2px;
+  }
+  .rc-prof-bigbalance .star { font-size: 22px; color: var(--rc-gold); margin-right: 4px; }
+  .rc-prof-cardrow {
+    margin-top: 12px; padding: 10px 12px;
+    border-top: 1px dashed var(--rc-line);
+    font-size: 13px; color: var(--rc-mut);
+    display: flex; align-items: center; gap: 9px; flex-wrap: wrap;
+  }
+  .rc-prof-cardno {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    color: #1c1c22; font-weight: 600; letter-spacing: .04em;
+    background: #fff; border: 1px solid var(--rc-line);
+    padding: 4px 9px; border-radius: 7px; cursor: pointer;
+    -webkit-user-select: all; user-select: all;
+  }
+  .rc-prof-cardno-reveal {
+    background: none; border: 1px solid var(--rc-line);
+    border-radius: 7px; padding: 4px 9px;
+    font-size: 12px; cursor: pointer; color: var(--rc-red);
+    font-weight: 600;
+  }
+  .rc-prof-pending {
+    margin-top: 14px; padding-top: 12px;
+    border-top: 1px solid var(--rc-line);
+  }
+  .rc-prof-pending h4 {
+    margin: 0 0 8px; font-size: 12px;
+    color: var(--rc-mut); letter-spacing: .07em;
+    text-transform: uppercase; font-weight: 700;
+    display: flex; justify-content: space-between;
+  }
+  .rc-prof-pending h4 .sum { color: var(--rc-red); }
+  .rc-prof-pending-list {
+    list-style: none; margin: 0; padding: 0;
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  .rc-prof-pending-row {
+    background: #fff; border: 1px solid var(--rc-line);
+    border-radius: 9px; padding: 9px 12px;
+    display: flex; align-items: center; gap: 10px;
+    font-size: 13px;
+  }
+  .rc-prof-pending-row .nm { flex: 1; color: #1c1c22; font-weight: 600; }
+  .rc-prof-pending-row .nm small { display: block; color: var(--rc-mut); font-weight: 400; margin-top: 2px; }
+  .rc-prof-pending-row .pts {
+    color: var(--rc-red); font-weight: 700; white-space: nowrap;
+  }
+  .rc-prof-empty {
+    color: var(--rc-mut); font-size: 12.5px;
+    background: #fff; border: 1px dashed var(--rc-line);
+    border-radius: 9px; padding: 11px 13px; margin: 0;
+  }
+</style>
+{% endblock %}
+
 {% block content %}
 <nav class="breadcrumbs" aria-label="Breadcrumb">
     {% for crumb in breadcrumbs %}
@@ -33,6 +121,107 @@
         </form>
     </div>
 </section>
+
+{# ============ Phase C — Royal Card section (linked members only) ============
+   Card balance, masked card number with reveal-on-tap (mirrors the PWA's
+   anti-cashier-harvesting pattern), and the list of pending bonuses still
+   waiting to land in SSIMS. Section is omitted entirely for customers
+   without a linked card — there's no "Join Royal Card" upsell here, the
+   homepage hero card already does that pitch. ============ #}
+{% if customer.card_no %}
+    {% set rc_balance  = royal_card_balance(customer.card_no) %}
+    {% set rc_pending  = royal_card_pending_bonuses(customer.card_no) %}
+    {% set rc_pending_sum = rc_pending|sum(attribute='points') if rc_pending else 0 %}
+<section class="section-block">
+    <div class="rc-prof-card">
+        <div class="rc-prof-head">
+            <h3><span class="crown">&#9819;</span> Royal Card</h3>
+            <a href="https://royalcard.ansonsupermart.com" target="_blank" rel="noopener"
+               class="header-link-secondary" style="font-size:12px;">Open app &rsaquo;</a>
+        </div>
+
+        <div class="rc-prof-bigbalance">
+            <span class="lbl">Current balance</span>
+            {% if rc_balance is none %}
+                {# Phase C disabled or Supabase error — show a neutral fallback. #}
+                <span style="color:#7a7a86; font-size:18px;">Balance unavailable right now.</span>
+            {% else %}
+                <span class="star">&#9733;</span>{{ "{:,}".format(rc_balance) }}
+                <span style="font-size:14px; font-weight:600; color:#7a7a86; font-family:-apple-system,sans-serif;">pts</span>
+            {% endif %}
+        </div>
+
+        {# Masked card number with reveal-on-tap. The fully-revealed number is
+           in the `data-full` attribute, NOT rendered visibly until clicked —
+           same approach as the PWA's anti-cashier-harvesting card screen. #}
+        <div class="rc-prof-cardrow">
+            <span>Card number</span>
+            {% set _card = customer.card_no %}
+            <span class="rc-prof-cardno js-rc-cardno"
+                  data-full="{{ _card }}"
+                  data-masked="&bull;&bull;&bull;&bull; &bull;&bull;&bull;&bull; {{ _card[-4:] }}">
+                &bull;&bull;&bull;&bull; &bull;&bull;&bull;&bull; {{ _card[-4:] }}
+            </span>
+            <button type="button" class="rc-prof-cardno-reveal js-rc-cardno-toggle"
+                    aria-label="Reveal full Royal Card number">Reveal</button>
+        </div>
+
+        <div class="rc-prof-pending">
+            <h4>
+                <span>Pending bonuses</span>
+                {% if rc_pending %}
+                <span class="sum">+{{ "{:,}".format(rc_pending_sum) }} pts</span>
+                {% endif %}
+            </h4>
+            {% if rc_pending %}
+            <ul class="rc-prof-pending-list">
+                {% for bonus in rc_pending %}
+                <li class="rc-prof-pending-row">
+                    <div class="nm">
+                        {{ bonus.reason_label }}
+                        {% if bonus.detail %}<small>{{ bonus.detail }}</small>{% endif %}
+                        {% if bonus.created_at %}<small>Added {{ bonus.created_at }}</small>{% endif %}
+                    </div>
+                    <div class="pts">+{{ "{:,}".format(bonus.points) }} pts</div>
+                </li>
+                {% endfor %}
+            </ul>
+            <p class="summary-note" style="margin-top:10px;">
+                Pending bonuses settle to your card balance at the store's end-of-day.
+            </p>
+            {% else %}
+            <p class="rc-prof-empty">No pending bonuses right now.</p>
+            {% endif %}
+        </div>
+    </div>
+</section>
+
+<script>
+(() => {
+  /* Reveal-on-tap for the card number — auto-re-mask after 30s so the
+     number isn't left visible if the customer hands the phone over. Same
+     UX as the PWA's card screen. */
+  const cardEl = document.querySelector('.js-rc-cardno');
+  const btn    = document.querySelector('.js-rc-cardno-toggle');
+  if (!cardEl || !btn) return;
+  let revealTimer = null;
+  const mask  = () => {
+    cardEl.innerHTML = cardEl.dataset.masked || cardEl.textContent;
+    btn.textContent = 'Reveal';
+    if (revealTimer) { clearTimeout(revealTimer); revealTimer = null; }
+  };
+  const reveal = () => {
+    cardEl.textContent = cardEl.dataset.full || cardEl.textContent;
+    btn.textContent = 'Hide';
+    if (revealTimer) clearTimeout(revealTimer);
+    revealTimer = setTimeout(mask, 30000);
+  };
+  btn.addEventListener('click', () => {
+    if (btn.textContent === 'Reveal') reveal(); else mask();
+  });
+})();
+</script>
+{% endif %}
 
 <section class="section-block">
     <h2 class="subsection-heading">Profile Details</h2>

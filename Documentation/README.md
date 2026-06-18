@@ -2,6 +2,90 @@
 
 Automated system to generate active product catalogs from FoxPro database files, similar to your Nielsen automation workflow.
 
+> Source policy: Use `MP_MER.FPB` only. `MP_MER2.FPB` is deprecated. See `Documentation/SOURCE_FILE_POLICY.md`.
+
+## Current Project Phase
+
+The project is now in an operating and governance phase, not an initial build phase.
+
+Current status:
+
+1. Foundation pipeline: completed and running
+   - `MP_MER.FPB` sync updates the SQLite catalog
+   - encoder workflow is live
+   - publish/export flow is established
+2. Daily catalog operations: active
+   - daily sync
+   - encoder review of `NEEDS_REVIEW`
+   - missing photo cleanup
+   - curated product enrichment in Web Encoder
+3. Taxonomy cleanup and governance: active in-progress phase
+   - reduce fallback buckets such as `Unknown`, `Others`, and `<NONE>`
+   - expand category-to-department override rules
+   - strengthen encoder-side review and reporting tools
+4. Storefront layer: architecture defined, phased implementation
+   - storefront reads from a published catalog layer, not the live encoder tables
+
+## Phase Summary
+
+### Phase 1: Source-to-Catalog Foundation
+
+Status: Completed
+
+- source sync into `anson_products.db`
+- active product filtering
+- barcode-aware product catalog generation
+- daily operational run path established
+
+### Phase 2: Encoder Operations
+
+Status: Live and ongoing
+
+- Web Encoder used for product cleanup and enrichment
+- photo workflow active
+- audit logging and sync log visibility added
+- encoder training and daily operating routine documented
+
+### Phase 3: Taxonomy Normalization and Governance
+
+Status: In progress
+
+- live department naming normalized
+- fallback buckets significantly reduced
+- remaining work focused on:
+  - `Others`
+  - `Unknown`
+  - `<NONE>`
+  - ambiguous category-to-department mappings
+
+Primary reference:
+- [ANSON_MASTER_DEPARTMENT_PROPOSAL.md](D:\Projects\CatalogAutomation\Documentation\ANSON_MASTER_DEPARTMENT_PROPOSAL.md)
+
+### Phase 4: Encoder Support and Review Tooling
+
+Status: In progress
+
+- audit log reader added
+- sync log reader added
+- daily audit summaries added
+- per-user and per-action audit breakdowns added
+
+Next likely improvements:
+- stronger review queues by department and legacy class
+- filters for weak or missing category placement
+- tighter encoder QA workflow on source changes
+
+### Phase 5: Storefront Publish Layer
+
+Status: Defined, partial implementation path
+
+- storefront boundary is documented
+- public site should read only from `storefront_catalog.db`
+- current work is still centered on catalog quality before broader storefront expansion
+
+Primary reference:
+- [STOREFRONT_ARCHITECTURE.md](D:\Projects\CatalogAutomation\Documentation\STOREFRONT_ARCHITECTURE.md)
+
 ## 🎯 What This Does
 
 **Before:** 
