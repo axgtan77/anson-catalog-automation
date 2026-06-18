@@ -16,10 +16,24 @@ Backup/
 # Uploaded images
 SQLite/uploads/
 
-# Sync logs and state files
-SQLite/sync_changes_*.txt
-SQLite/.last_mp_mer_sync.json
-SQLite/*.log
+# Secrets / credentials — NEVER commit
+Config/google-service-account.json
+Config/local/
+*-service-account.json
+
+# Sync logs and state files (any directory)
+sync_changes_*.txt
+.last_mp_mer_sync.json
+*.log
+SQLite/uploads/
+
+# Generated publish/export artifacts
+publish_exclusions_*.txt
+AWESOME_TABLE_PRODUCTS_UPDATED*.csv
+pets_all_tmp.txt
+
+# Windows shortcuts
+*.lnk
 
 # Claude Code local settings
 .claude/
