@@ -7,8 +7,61 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="{{ url_for('static', filename='storefront.css') }}">
+    <style>
+      /* Mobile header compression — the sticky bottom nav from M3+ now covers
+         Sign in / Cart / Search / Browse on phones, so the top chrome can shrink
+         to give the actual page content the breathing room it deserves. Desktop
+         layout is unchanged. */
+      @media (max-width: 640px) {
+        .site-header .utility-bar { display: none; }
+        .site-header .topbar { padding: 6px 0; }
+        .site-header .topbar-inner { gap: 8px; align-items: center; }
+        .site-header .brand-lockup { gap: 8px; align-items: center; }
+        .site-header .brand-mark img { width: 32px !important; height: 32px !important; }
+        /* Bring back the wordmark on mobile, but only the "Anson Supermart" line.
+           Drop the long subtitle. Sits beside the logo on a single line. */
+        .site-header .brand-text { display: flex; align-items: center; }
+        .site-header .brand-text strong {
+          font-size: 15px; font-weight: 700; white-space: nowrap; letter-spacing: .2px;
+        }
+        .site-header .brand-text small { display: none; }        /* subtitle hidden */
+        .site-header .searchbar { flex: 1; min-width: 0; }
+        .site-header .searchbar input { padding: 7px 10px; font-size: 14px; }
+        /* Collapse only the SUBMIT button to a 🔍 icon on mobile. Excludes the
+           clear (×) button — otherwise it'd render a second magnifier. */
+        .site-header .searchbar button:not(.searchbar-clear) {
+          padding: 7px 10px; font-size: 0; line-height: 1;
+        }
+        .site-header .searchbar button:not(.searchbar-clear)::before {
+          content: "🔍"; font-size: 15px;
+        }
+        /* These actions live in the sticky bottom nav on mobile — duplicate up top
+           just eats space. Hide. (Account avatar/cart-count signals still come
+           through via the bottom nav badge.) */
+        .site-header .header-actions { display: none !important; }
+        .site-header .nav-strip { padding: 4px 0; font-size: 12.5px; }
+        .site-header .nav-links { gap: 14px; }
+        .site-header .nav-links a { padding: 6px 0; }
+      }
+
+      /* Clearable search field — the wrapper lets us float a reset (×) button
+         inside the input on the right. Shown only when the field has text. */
+      .searchbar-field { position: relative; display: flex; flex: 1; min-width: 0; }
+      .searchbar-field input { width: 100%; padding-right: 30px !important; }
+      .searchbar-clear {
+        position: absolute; top: 50%; right: 4px; transform: translateY(-50%);
+        width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%;
+        background: rgba(0,0,0,.08); color: #333; font-size: 15px; line-height: 1;
+        cursor: pointer; display: flex; align-items: center; justify-content: center;
+      }
+      .searchbar-clear:hover { background: rgba(0,0,0,.16); }
+      .searchbar-clear[hidden] { display: none; }
+    </style>
+    {# Per-page scoped CSS lands here so it's parsed BEFORE the body content,
+       eliminating the FOUC flash on first paint. #}
+    {% block extra_head %}{% endblock %}
 </head>
-<body>
+<body class="{% if request.path.startswith('/orders/admin') %}is-admin-page{% endif %}{% if editing_request_code %} is-editing-order{% endif %}">
 
     <header class="site-header">
 
@@ -34,9 +87,12 @@
                 </a>
 
                 <form class="searchbar" method="get" action="{{ url_for('search') }}">
-                    <input type="search" name="q"
-                           value="{{ request.args.get('q', '') }}"
-                           placeholder="Search products, brand, or barcode…">
+                    <span class="searchbar-field">
+                        <input type="search" name="q" data-search-input autocomplete="off"
+                               value="{{ request.args.get('q', '') }}"
+                               placeholder="Search products, brand, or barcode…">
+                        <button type="button" class="searchbar-clear" data-search-clear aria-label="Clear search" hidden>×</button>
+                    </span>
                     <button type="submit">Search</button>
                 </form>
 
@@ -48,7 +104,7 @@
                     <a class="header-link-secondary" href="{{ url_for('customer_login_page') }}">Sign in</a>
                     <a class="header-link-secondary" href="{{ url_for('order_lookup_page') }}">Track request</a>
                     {% endif %}
-                    <a class="cart-link" href="{{ url_for('cart_page') }}">
+                    <a class="cart-link" href="{{ editing_cart_url if editing_request_code else url_for('cart_page') }}">
                         <span>Order request</span>
                         <span class="cart-count">{{ cart_count }}</span>
                     </a>
@@ -62,10 +118,42 @@
                 {% for department in top_departments %}
                 <a href="{{ url_for('department_page', slug=department.slug) }}">{{ department.name }}</a>
                 {% endfor %}
+                {% if top_spotlights %}
+                <span class="nav-divider" aria-hidden="true"></span>
+                {% for spotlight in top_spotlights %}
+                <a class="nav-spotlight" href="{{ url_for('brand_spotlight', slug=spotlight.slug) }}">{{ spotlight.name }}</a>
+                {% endfor %}
+                {% endif %}
             </div>
         </nav>
 
     </header>
+
+    {% if editing_request_code %}
+    <div class="editing-banner">
+        <div class="wrap editing-banner-inner">
+            <span>
+                Editing request <strong>{{ editing_request_code }}</strong> &mdash;
+                add or change items, then save from your <a href="{{ url_for('cart_page') }}">cart</a>.
+            </span>
+            <div class="editing-banner-actions">
+                <a class="editing-banner-link" href="{{ editing_cart_url }}">Review edit basket / save</a>
+                {% if storefront_admin_authenticated %}
+                <form method="post" action="{{ url_for('apply_editing_order_request_cart', request_code=editing_request_code) }}" style="display:inline;">
+                    <button type="submit" class="editing-banner-save">Save changes to order</button>
+                </form>
+                <a class="editing-banner-link" href="{{ url_for('admin_order_detail_page', request_code=editing_request_code) }}">Back to admin order</a>
+                {% else %}
+                <a class="editing-banner-link" href="{{ url_for('order_request_page', request_code=editing_request_code) }}">Back to request</a>
+                {% endif %}
+                <form method="post" action="{{ url_for('cancel_editing_order_request', request_code=editing_request_code) }}"
+                      onsubmit="return confirm('Discard changes and keep the original request as-is?');" style="display:inline;">
+                    <button type="submit" class="editing-banner-discard">Discard changes</button>
+                </form>
+            </div>
+        </div>
+    </div>
+    {% endif %}
 
     <main class="wrap page-shell">
         {% block content %}{% endblock %}
@@ -86,6 +174,26 @@
 
     <script>
     (() => {
+        // Clearable search inputs: show a reset (×) button whenever the field
+        // has text; clicking it empties the field and refocuses so the shopper
+        // can retype immediately. Works for the header bar and the search page.
+        const syncClear = (input) => {
+            const field = input.closest('.searchbar-field');
+            const btn = field && field.querySelector('[data-search-clear]');
+            if (btn) btn.hidden = input.value.length === 0;
+        };
+        document.querySelectorAll('input[data-search-input]').forEach(syncClear);
+        document.addEventListener('input', (e) => {
+            if (e.target.matches('input[data-search-input]')) syncClear(e.target);
+        });
+        document.addEventListener('click', (e) => {
+            const btn = e.target.closest('[data-search-clear]');
+            if (!btn) return;
+            const field = btn.closest('.searchbar-field');
+            const input = field && field.querySelector('input[data-search-input]');
+            if (input) { input.value = ''; input.focus(); syncClear(input); }
+        });
+
         window.storefrontGoBack = (fallbackUrl) => {
             try {
                 const referrer = document.referrer;
@@ -104,8 +212,16 @@
         };
 
         const updateCartCount = (count) => {
+            // Top-bar badge (legacy class) — always rendered, just retitle.
             document.querySelectorAll('.cart-count').forEach((node) => {
                 node.textContent = count;
+            });
+            // Every new-design sticky-bottom-nav badge has .js-cart-badge.
+            // Update text AND toggle visibility so the badge appears the
+            // first time something is added (was display:none when empty).
+            document.querySelectorAll('.js-cart-badge').forEach((node) => {
+                node.textContent = count;
+                node.style.display = (count && count > 0) ? '' : 'none';
             });
         };
 

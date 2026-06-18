@@ -1,0 +1,105 @@
+{% extends "base.html" %}
+
+{% block extra_head %}
+{% include "_shop_cat_styles.html" %}
+{% endblock %}
+{% block title %}{{ bucket.name }} | Anson Supermart{% endblock %}
+
+{% block content %}
+
+{# Friendly Browse-Categories tile landing. Reuses the M4 .shop-cat scoped
+   styles. Titled with the friendly bucket name; shows exactly the aisles the
+   bucket covers (multi-category filter handled server-side). #}
+
+{% set sort_label = sort_options[active_sort][1] if active_sort in sort_options else sort_options['top'][1] %}
+
+<div class="shop-cat">
+
+  <nav class="shop-cat-crumbs" aria-label="Breadcrumb">
+    {% for crumb in breadcrumbs %}
+      {% if crumb.url %}<a href="{{ crumb.url }}">{{ crumb.label }}</a>{% else %}<span>{{ crumb.label }}</span>{% endif %}
+      {% if not loop.last %}<span class="shop-cat-crumbs-sep" aria-hidden="true">›</span>{% endif %}
+    {% endfor %}
+  </nav>
+
+  {# ===== Subhead: back + title + N items ===== #}
+  <div class="shop-cat-subhead">
+    <a class="shop-cat-back" href="{{ url_for('home') }}"
+       onclick="return storefrontGoBack('{{ url_for('home') }}');"
+       aria-label="Back">←</a>
+    <h1 class="shop-cat-title">{{ bucket.emoji }} {{ bucket.name }}</h1>
+    <span class="shop-cat-count">{{ "{:,}".format(pager.total_count) }} item{{ '' if pager.total_count == 1 else 's' }}</span>
+  </div>
+  {% if bucket.subtext %}
+  <div style="padding: 0 14px 8px; color: var(--rc-mut); font-size: 12.5px;">{{ bucket.subtext }}</div>
+  {% endif %}
+
+  {# ===== Filter row: Price + Sort ===== #}
+  <div class="shop-cat-filterbar">
+    <div class="shop-cat-filterbar-left">
+      {# ---- Price bottom-sheet ---- #}
+      <details class="shop-cat-sheet">
+        <summary class="shop-cat-filterpill {% if active_price_band %}shop-cat-filterpill-has{% endif %}">
+          <em>Price</em>{% if active_price_band and active_price_band in price_bands %}{{ price_bands[active_price_band][0] }}{% else %}Any{% endif %} ▾
+        </summary>
+        <div class="shop-cat-sheet-body shop-cat-sheet-list">
+          {% for band_key, band_info in price_bands.items() %}
+          {% set link_qs = build_query_string(sort=active_sort, price_band=(band_key if band_key else '')) %}
+          <a class="shop-cat-sheet-link {% if active_price_band == band_key %}shop-cat-sheet-link-on{% endif %}"
+             href="{{ url_for('browse_bucket', slug=bucket.slug) }}{% if link_qs %}?{{ link_qs }}{% endif %}">{{ band_info[0] }}</a>
+          {% endfor %}
+        </div>
+      </details>
+    </div>
+
+    {# ---- Sort pill on the right ---- #}
+    <details class="shop-cat-sheet shop-cat-sheet-right">
+      <summary class="shop-cat-filterpill"><em>Sort:</em>{{ sort_label }} ▾</summary>
+      <div class="shop-cat-sheet-body shop-cat-sheet-list">
+        {% for sort_key, sort_info in sort_options.items() %}
+        {% if sort_key != 'relevance' %}
+        {% set link_qs = build_query_string(sort=sort_key, price_band=active_price_band) %}
+        <a class="shop-cat-sheet-link {% if active_sort == sort_key %}shop-cat-sheet-link-on{% endif %}"
+           href="{{ url_for('browse_bucket', slug=bucket.slug) }}{% if link_qs %}?{{ link_qs }}{% endif %}">{{ sort_info[1] }}</a>
+        {% endif %}
+        {% endfor %}
+      </div>
+    </details>
+  </div>
+
+  {# ===== Product grid OR empty ===== #}
+  <section class="shop-cat-grid-section">
+    {% if products %}
+      <div class="product-grid shop-cat-cards">
+        {% for product in products %}
+        {% set card_product = product %}
+        {% include "_product_card.html" %}
+        {% endfor %}
+      </div>
+
+      {% if pager.total_pages > 1 %}
+      <nav class="shop-cat-pager" aria-label="Page navigation">
+        {% if pager.has_prev %}
+        <a href="{{ url_for('browse_bucket', slug=bucket.slug, sort=active_sort, price_band=active_price_band, page=pager.prev_page) }}">‹ Prev</a>
+        {% else %}<span class="disabled">‹ Prev</span>{% endif %}
+        <span>Page {{ pager.page }} of {{ pager.total_pages }}</span>
+        {% if pager.has_next %}
+        <a href="{{ url_for('browse_bucket', slug=bucket.slug, sort=active_sort, price_band=active_price_band, page=pager.next_page) }}">Next ›</a>
+        {% else %}<span class="disabled">Next ›</span>{% endif %}
+      </nav>
+      {% else %}
+      <p class="shop-cat-end-hint">That's all of {{ bucket.name }}.</p>
+      {% endif %}
+    {% else %}
+      <div class="shop-cat-empty">
+        <p>No products available in {{ bucket.name }} right now.</p>
+        <p style="margin-top: 12px;"><a href="{{ url_for('department_page', slug=bucket.department_slug) }}">Browse the full department →</a></p>
+      </div>
+    {% endif %}
+  </section>
+
+</div>
+
+{% include "_shop_home_bnav.html" ignore missing %}
+
+{% endblock %}

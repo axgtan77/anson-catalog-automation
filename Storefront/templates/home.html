@@ -1,0 +1,467 @@
+{% extends "base.html" %}
+
+
+{% block extra_head %}
+<style>
+  .shop-home {
+    --rc-red:    #C0102E;
+    --rc-red-2:  #e23b54;
+    --rc-dark:   #6e0a1c;
+    --rc-gold:   #b8902b;
+    --rc-ink:    #1c1c22;
+    --rc-mut:    #7a7a86;
+    --rc-line:   #ececf1;
+    --rc-shelf:  #f7f3ec;
+    margin: 0 auto;
+    max-width: 100%;
+    color: var(--rc-ink);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding-bottom: 80px; /* sticky nav clearance */
+  }
+  /* Responsive max-width tiers (see _shop_cat_styles.html for the rationale) */
+  @media (min-width: 641px)  { .shop-home { max-width: 760px; } }
+  @media (min-width: 1024px) { .shop-home { max-width: 1100px; } }
+  @media (min-width: 1440px) { .shop-home { max-width: 1320px; } }
+  .shop-home .shop-home-flashes { padding: 12px 16px 0; display: flex; flex-direction: column; gap: 8px; }
+  .shop-home .shop-home-flash { padding: 10px 14px; border-radius: 10px; font-size: 13px; border: 1px solid var(--rc-line); background: #fff; }
+  .shop-home .shop-home-flash-info    { background: #fff7ea; border-color: #f0d49a; color: #6c4a06; }
+  .shop-home .shop-home-flash-success { background: #ecf8f0; border-color: #b9e2c3; color: #1a5a35; }
+  .shop-home .shop-home-flash-error   { background: #fdecee; border-color: #f4b6c0; color: #861028; }
+
+  /* Account strip — chip lives near the top of the page content */
+  .shop-home .shop-home-account-strip {
+    display: flex; justify-content: flex-end; padding: 14px 16px 0;
+  }
+  .shop-home .shop-home-memberchip {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 6px 12px; border-radius: 999px;
+    background: linear-gradient(135deg, var(--rc-dark), var(--rc-red) 60%, var(--rc-red-2));
+    color: #fff; font-size: 12.5px; font-weight: 700; letter-spacing: .03em;
+    box-shadow: 0 4px 10px rgba(192,16,46,.18);
+  }
+  .shop-home .shop-home-memberchip-crown { color: var(--rc-gold); font-size: 13px; }
+  .shop-home .shop-home-memberchip-arrow { opacity: .8; font-size: 11px; margin-left: 2px; }
+  /* Phase C — points pill (live balance) + tiny pending-bonus dot. The dot
+     is intentionally subtle: 7px solid gold, no badge text. Don't push it. */
+  .shop-home .shop-home-memberchip-pts {
+    display: inline-flex; align-items: center; gap: 3px;
+    padding: 1px 7px; border-radius: 999px;
+    background: rgba(255,255,255,.18); color: #fff;
+    font-size: 11.5px; font-weight: 700; letter-spacing: .02em;
+    margin-left: 2px;
+  }
+  .shop-home .shop-home-memberchip-pts-star { color: var(--rc-gold); font-size: 11px; }
+  .shop-home .shop-home-memberchip {
+    position: relative;  /* anchor for the pending dot */
+  }
+  .shop-home .shop-home-memberchip-pending {
+    position: absolute; top: -2px; right: -2px;
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--rc-gold);
+    box-shadow: 0 0 0 1.5px #fff;
+  }
+  .shop-home .shop-home-signinpill {
+    display: inline-flex; align-items: center;
+    padding: 7px 14px; border-radius: 999px;
+    border: 1px solid var(--rc-red); color: var(--rc-red); background: #fff;
+    font-size: 12.5px; font-weight: 700;
+  }
+
+  /* Hero / Reorder card */
+  .shop-home .shop-home-hero { padding: 12px 16px 4px; }
+  .shop-home .shop-home-hi-greet { font-size: 12px; color: var(--rc-mut); letter-spacing: .04em; }
+  .shop-home .shop-home-hi-name  { font-family: Georgia, "Times New Roman", serif; font-size: 22px; margin: 2px 0 10px; color: var(--rc-ink); }
+  .shop-home .shop-home-hi-star  { color: var(--rc-gold); font-size: 18px; }
+
+  .shop-home .shop-home-reorder {
+    background: #fff; border: 1px solid var(--rc-line); border-radius: 14px;
+    padding: 13px 14px; display: flex; gap: 12px; align-items: center;
+    box-shadow: 0 6px 18px rgba(20,10,30,.05);
+    width: 100%;
+  }
+  .shop-home .shop-home-reorder-ic { font-size: 22px; flex-shrink: 0; }
+  .shop-home .shop-home-reorder-body { flex: 1; min-width: 0; }
+  .shop-home .shop-home-reorder-body h4 { margin: 0; font-size: 14px; color: var(--rc-ink); }
+  .shop-home .shop-home-reorder-body p  { margin: 2px 0 0; font-size: 12px; color: var(--rc-mut); }
+  .shop-home .shop-home-reorder-body b  { color: var(--rc-ink); }
+  .shop-home .shop-home-reorder-cta {
+    background: var(--rc-red); color: #fff; border: 0; cursor: pointer;
+    font-weight: 700; padding: 9px 16px; border-radius: 9px;
+    font-size: 13px; white-space: nowrap;
+  }
+  .shop-home .shop-home-reorder-cta:hover { background: var(--rc-dark); }
+
+  /* Royal Card pitch (guest hero) — gradient brightened; ALL text forced white
+     because the site's default H2 color is dark, which was making the headline
+     invisible on the deep-red background. */
+  .shop-home .shop-home-pitch {
+    background: linear-gradient(135deg, #8a0c22 0%, var(--rc-red) 55%, #e23b54 100%);
+    color: #fff !important; border-radius: 16px; padding: 20px 20px 18px;
+    position: relative; overflow: hidden;
+    box-shadow: 0 10px 24px rgba(110,10,28,.22);
+  }
+  .shop-home .shop-home-pitch * { color: inherit; }
+  .shop-home .shop-home-pitch-crown { position: absolute; right: 16px; top: 14px; font-size: 36px; color: var(--rc-gold) !important; opacity: .9; }
+  .shop-home .shop-home-pitch-kicker { font-size: 11px; letter-spacing: .22em; text-transform: uppercase; color: rgba(255,255,255,.85) !important; font-weight: 700; }
+  .shop-home .shop-home-pitch h2 {
+    font-family: Georgia, "Times New Roman", serif;
+    margin: 6px 0 8px; font-size: 22px;
+    color: #fff !important; font-weight: 700;
+    text-shadow: 0 1px 2px rgba(0,0,0,.22);
+  }
+  .shop-home .shop-home-pitch p {
+    margin: 0 0 12px; font-size: 13.5px; max-width: 320px;
+    color: rgba(255,255,255,.95) !important;
+  }
+  .shop-home .shop-home-pitch-btn {
+    background: var(--rc-gold); color: var(--rc-ink) !important; font-weight: 800;
+    padding: 10px 18px; border-radius: 10px; display: inline-block;
+    font-size: 13.5px; letter-spacing: .02em; text-decoration: none;
+    box-shadow: 0 4px 10px rgba(0,0,0,.18);
+  }
+  .shop-home .shop-home-pitch-lil { display: block; margin-top: 10px; font-size: 11.5px; color: rgba(255,255,255,.78) !important; }
+
+  /* Browse Categories button + mega-menu (CSS-only toggle) */
+  .shop-home .shop-home-cat-section { padding: 16px 16px 4px; }
+  .shop-home .shop-home-catbtn {
+    width: 100%; background: #fff; border: 1px solid var(--rc-line); border-radius: 12px;
+    padding: 13px 14px; display: flex; align-items: center; gap: 10px; cursor: pointer;
+    box-shadow: 0 4px 12px rgba(20,10,30,.04); user-select: none;
+  }
+  .shop-home .shop-home-catbtn-ic {
+    width: 36px; height: 36px; background: #fbe9ec; color: var(--rc-red);
+    border-radius: 10px; display: inline-flex; align-items: center;
+    justify-content: center; font-size: 18px; flex-shrink: 0;
+  }
+  .shop-home .shop-home-catbtn-lbl { flex: 1; }
+  .shop-home .shop-home-catbtn-lbl b { display: block; font-size: 14px; }
+  .shop-home .shop-home-catbtn-lbl span { font-size: 12px; color: var(--rc-mut); }
+  .shop-home .shop-home-catbtn-chev { color: var(--rc-mut); font-size: 16px; transition: transform .25s; }
+  .shop-home .shop-home-megamenu {
+    display: none;
+    background: #fff; border: 1px solid var(--rc-red); border-top: none;
+    border-radius: 0 0 12px 12px; margin-top: -2px; padding: 8px 6px 10px;
+    box-shadow: 0 12px 22px rgba(20,10,30,.10);
+  }
+  .shop-home .shop-home-cat-toggle:checked ~ .shop-home-megamenu { display: block; }
+  .shop-home .shop-home-cat-toggle:checked ~ .shop-home-catbtn { border-color: var(--rc-red); box-shadow: 0 6px 16px rgba(192,16,46,.10); }
+  .shop-home .shop-home-cat-toggle:checked ~ .shop-home-catbtn .shop-home-catbtn-chev { transform: rotate(180deg); color: var(--rc-red); }
+  .shop-home .shop-home-megamenu-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0; }
+  .shop-home .shop-home-megamenu-item {
+    display: flex; gap: 10px; align-items: center; padding: 9px 10px; border-radius: 8px;
+    font-size: 12.5px; color: var(--rc-ink); text-decoration: none;
+  }
+  .shop-home .shop-home-megamenu-item:hover { background: #fbe9ec; }
+  .shop-home .shop-home-megamenu-e {
+    width: 26px; height: 26px; background: var(--rc-shelf); border-radius: 8px;
+    display: inline-flex; align-items: center; justify-content: center;
+    font-size: 14px; flex-shrink: 0;
+  }
+  .shop-home .shop-home-megamenu-text b { display: block; font-size: 12.5px; }
+  .shop-home .shop-home-megamenu-text small { color: var(--rc-mut); display: block; font-size: 10px; line-height: 1.3; }
+  .shop-home .shop-home-megamenu-footer {
+    margin-top: 6px; padding: 10px 12px; font-size: 12px; color: var(--rc-mut);
+    display: flex; justify-content: space-between; border-top: 1px solid var(--rc-line);
+  }
+  .shop-home .shop-home-megamenu-footer a { color: var(--rc-red); font-weight: 700; text-decoration: none; }
+
+  /* Quick Baskets strip */
+  .shop-home .shop-home-strip { padding: 18px 16px 6px; }
+  .shop-home .shop-home-strip-heading {
+    font-size: 13px; margin: 0 0 10px; letter-spacing: .07em; text-transform: uppercase;
+    color: var(--rc-mut); display: flex; justify-content: space-between; align-items: baseline; font-weight: 700;
+  }
+  .shop-home .shop-home-strip-heading a { color: var(--rc-red); font-size: 11px; font-weight: 700; text-decoration: none; }
+  .shop-home .shop-home-baskets { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; }
+  .shop-home .shop-home-basket {
+    background: linear-gradient(160deg, #fff, #fff4f6); border: 1px solid var(--rc-line);
+    border-radius: 12px; padding: 12px 13px; display: flex; flex-direction: column;
+    position: relative; text-decoration: none; color: var(--rc-ink);
+  }
+  .shop-home .shop-home-basket:hover { box-shadow: 0 6px 14px rgba(192,16,46,.10); }
+  .shop-home .shop-home-basket-soon {
+    position: absolute; right: 8px; top: 8px; font-size: 9px; letter-spacing: .08em;
+    text-transform: uppercase; background: var(--rc-gold); color: var(--rc-ink);
+    padding: 2px 7px; border-radius: 8px; font-weight: 800;
+  }
+  .shop-home .shop-home-basket-em { font-size: 20px; }
+  .shop-home .shop-home-basket-nm { font-size: 13.5px; font-weight: 700; margin: 7px 0 1px; }
+  .shop-home .shop-home-basket-sub { font-size: 11.5px; color: var(--rc-mut); }
+  .shop-home .shop-home-basket-px { font-family: Georgia, "Times New Roman", serif; color: var(--rc-red); font-size: 13.5px; margin-top: 8px; font-weight: 700; }
+
+  /* Top Sellers grid heading */
+  .shop-home .shop-home-pgrid { padding: 18px 16px 8px; }
+  .shop-home .shop-home-pgrid-top { display: flex; justify-content: space-between; align-items: center; padding: 0 2px 10px; }
+  .shop-home .shop-home-pgrid-top h3 { margin: 0; font-size: 15px; font-family: Georgia, "Times New Roman", serif; }
+  .shop-home .shop-home-sortpill {
+    background: #fff; border: 1px solid var(--rc-line); border-radius: 999px;
+    padding: 5px 11px; font-size: 11.5px; color: var(--rc-ink);
+    display: inline-flex; align-items: center; gap: 5px; font-weight: 600;
+  }
+  .shop-home .shop-home-sortpill em { font-style: normal; color: var(--rc-mut); margin-right: 3px; }
+
+  /* Hand the grid over to the existing _product_card.html via .product-grid;
+     we just override gap & columns for the homepage mobile look. */
+  .shop-home .shop-home-cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
+  .shop-home .shop-home-cards .product-card { background: #fff; border: 1px solid var(--rc-line); border-radius: 12px; overflow: hidden; }
+
+  /* Sticky bottom nav — mobile only (≤640px) */
+  .shop-home .shop-home-bottom-spacer { height: 12px; }
+  .shop-home .shop-home-bnav { display: none; }
+  @media (max-width: 640px) {
+    .shop-home .shop-home-bnav {
+      display: flex; position: fixed; left: 0; right: 0; bottom: 0;
+      background: #fff; border-top: 1px solid var(--rc-line);
+      padding: 7px 4px max(10px, env(safe-area-inset-bottom)) 4px;
+      justify-content: space-around; z-index: 100;
+      box-shadow: 0 -6px 18px rgba(20,10,30,.06);
+    }
+    .shop-home .shop-home-bnav-item {
+      flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
+      padding: 4px 0; color: var(--rc-mut); font-size: 10.5px; font-weight: 600;
+      text-decoration: none; position: relative;
+    }
+    .shop-home .shop-home-bnav-on { color: var(--rc-red); }
+    .shop-home .shop-home-bnav-e { font-size: 18px; line-height: 1; }
+    .shop-home .shop-home-bnav-ct {
+      position: absolute; top: 0; right: calc(50% - 22px);
+      background: var(--rc-gold); color: var(--rc-ink);
+      font-size: 9px; font-weight: 800;
+      min-width: 16px; height: 16px; padding: 0 5px; border-radius: 10px;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .shop-home { padding-bottom: 96px; }
+  }
+
+  /* ===== Tablet (≥641): 3-up top sellers / 3-up quick baskets ===== */
+  @media (min-width: 641px) {
+    .shop-home .shop-home-cards { grid-template-columns: repeat(3, 1fr); }
+    .shop-home .shop-home-baskets { grid-template-columns: repeat(3, 1fr); }
+    /* Mega-menu can fit 3 columns instead of 2 once we have the room. */
+    .shop-home .shop-home-megamenu-grid { grid-template-columns: repeat(3, 1fr); }
+  }
+
+  /* ===== Desktop (≥1024): 4-up grids, hero gets a wider but capped content
+     width so the headline still scans like a real hero rather than a banner
+     stretched across a billboard. ===== */
+  @media (min-width: 1024px) {
+    .shop-home .shop-home-cards    { grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .shop-home .shop-home-baskets  { grid-template-columns: repeat(4, 1fr); }
+    .shop-home .shop-home-megamenu-grid { grid-template-columns: repeat(4, 1fr); }
+
+    /* Hero / pitch contents stay readable — don't stretch to 1100px. */
+    .shop-home .shop-home-hero { padding: 18px 18px 6px; }
+    .shop-home .shop-home-reorder,
+    .shop-home .shop-home-pitch {
+      max-width: 720px;
+    }
+
+    /* Section paddings breathe a little. */
+    .shop-home .shop-home-cat-section,
+    .shop-home .shop-home-strip,
+    .shop-home .shop-home-pgrid,
+    .shop-home .shop-home-account-strip { padding-left: 18px; padding-right: 18px; }
+    .shop-home .shop-home-pgrid-top h3 { font-size: 18px; }
+  }
+
+  /* ===== Wide (≥1440): 5-up product grids ===== */
+  @media (min-width: 1440px) {
+    .shop-home .shop-home-cards   { grid-template-columns: repeat(5, 1fr); gap: 16px; }
+    .shop-home .shop-home-baskets { grid-template-columns: repeat(4, 1fr); }
+  }
+</style>
+{% endblock %}
+{% block title %}Anson Supermart - Neighborhood Grocery Catalog{% endblock %}
+
+{% block content %}
+
+{# =====================================================================
+   ANSON Shop — homepage v2 (Royal Card integration, Milestone 3)
+   Mockups: /home/axgtan/RoyalCard/mockups/shop_homepage.html
+            /home/axgtan/RoyalCard/mockups/shop_anonymous.html
+   - Logged-in: greeting + "Reorder last basket" hero
+   - Guest:     Royal Card pitch card in place of the hero
+   - Both:      Browse Categories ▾ mega-menu, Quick Baskets strip,
+                Top Sellers grid, mobile sticky bottom nav
+   All styles scoped under .shop-home to avoid colliding with the
+   existing site .hero / .product-grid rules. =====================================================================#}
+
+{% set first_name = customer_first_name or 'there' %}
+{% set show_reorder_hero = customer_logged_in and last_fulfilled_order %}
+
+<div class="shop-home">
+
+  {% with messages = get_flashed_messages(with_categories=true) %}
+    {% if messages %}
+    <div class="shop-home-flashes">
+      {% for category, message in messages %}
+      <div class="shop-home-flash shop-home-flash-{{ category }}">{{ message }}</div>
+      {% endfor %}
+    </div>
+    {% endif %}
+  {% endwith %}
+
+  {# ===== Member chip / Sign-in pill ===== #}
+  {# Phase C — when the signed-in customer has a linked Royal Card, surface
+     their live balance on the chip and a tiny gold dot when they have any
+     pending bonuses (welcome / referral / birthday / etc.). Both helpers
+     fail-open to None / []. Guests see the unchanged "Sign in ▸" pill —
+     no Royal Card surface for them at all. #}
+  {% set rc_balance = (royal_card_balance(current_customer_card_no) if current_customer_card_no else None) %}
+  {% set rc_pending = (royal_card_pending_bonuses(current_customer_card_no) if current_customer_card_no else []) %}
+  <div class="shop-home-account-strip">
+    {% if customer_logged_in %}
+    <a class="shop-home-memberchip" href="{{ url_for('customer_orders_page') }}"
+       title="My orders &middot; Royal Card">
+      <span class="shop-home-memberchip-crown">♛</span>
+      <b>{{ first_name }}</b>
+      {% if rc_balance is not none %}
+      <span class="shop-home-memberchip-pts" aria-label="Royal Card balance">
+        <span class="shop-home-memberchip-pts-star">★</span>
+        {{ "{:,}".format(rc_balance) }} pts
+      </span>
+      {% endif %}
+      <span class="shop-home-memberchip-arrow">▸</span>
+      {% if rc_pending %}
+      <span class="shop-home-memberchip-pending"
+            aria-label="Pending Royal Card bonuses"
+            title="{{ rc_pending|length }} pending Royal Card bonus{% if rc_pending|length != 1 %}es{% endif %}"></span>
+      {% endif %}
+    </a>
+    {% else %}
+    <a class="shop-home-signinpill" href="{{ url_for('customer_login_page') }}">Sign in ▸</a>
+    {% endif %}
+  </div>
+
+  {# ===== HERO: Reorder last basket (logged-in) OR Royal Card pitch (guest / no-history) ===== #}
+  <section class="shop-home-hero">
+    {% if show_reorder_hero %}
+      <div class="shop-home-hi-greet">Welcome back,</div>
+      <div class="shop-home-hi-name">Hi {{ first_name }} <span class="shop-home-hi-star">★</span></div>
+      <form method="post" action="{{ url_for('customer_reorder', request_code=last_fulfilled_order.request_code) }}" class="shop-home-reorder">
+        <div class="shop-home-reorder-ic">🛒</div>
+        <div class="shop-home-reorder-body">
+          <h4>Reorder your last basket</h4>
+          <p>
+            <b>{{ last_fulfilled_order.item_count }} item{{ '' if last_fulfilled_order.item_count == 1 else 's' }}</b>
+            {% if last_fulfilled_order.total %} · ₱{{ "{:,.0f}".format(last_fulfilled_order.total) }}{% endif %}
+            {% if last_fulfilled_order.date %} · {{ last_fulfilled_order.date[:10] }}{% endif %}
+          </p>
+        </div>
+        <button type="submit" class="shop-home-reorder-cta">Add all</button>
+      </form>
+    {% else %}
+      <div class="shop-home-pitch">
+        <div class="shop-home-pitch-crown">♛</div>
+        <div class="shop-home-pitch-kicker">ROYAL CARD</div>
+        <h2>Earn points every time you shop.</h2>
+        <p>Earn 1 pt per ₱200 spent. Use them in-store or online. Free to join — sign in with your mobile.</p>
+        <a class="shop-home-pitch-btn" href="{{ url_for('customer_login_page') }}">Sign in / Join ▸</a>
+        <span class="shop-home-pitch-lil">Already have a plastic Royal Card? Just sign in.</span>
+      </div>
+    {% endif %}
+  </section>
+
+  {# ===== Browse Categories ▾ (mega-menu, CSS-only via :checked) ===== #}
+  <section class="shop-home-cat-section">
+    <input type="checkbox" id="shop-home-cat-toggle" class="shop-home-cat-toggle" hidden>
+    <label for="shop-home-cat-toggle" class="shop-home-catbtn" aria-label="Toggle Browse Categories menu">
+      <span class="shop-home-catbtn-ic">📂</span>
+      <span class="shop-home-catbtn-lbl">
+        <b>Browse Categories</b>
+        <span>All departments &amp; aisles</span>
+      </span>
+      <span class="shop-home-catbtn-chev">▾</span>
+    </label>
+    <div class="shop-home-megamenu" role="region" aria-label="Department list">
+      <div class="shop-home-megamenu-grid">
+        {% for bucket in friendly_departments %}
+        <a class="shop-home-megamenu-item" href="{% if bucket.slug %}{{ url_for('browse_bucket', slug=bucket.slug) }}{% else %}{{ url_for('department_page', slug=bucket.department_slug) }}{% endif %}">
+          <span class="shop-home-megamenu-e">{{ bucket.emoji }}</span>
+          <span class="shop-home-megamenu-text">
+            <b>{{ bucket.name }}</b>
+            <small>{{ bucket.subtext }}</small>
+          </span>
+        </a>
+        {% endfor %}
+      </div>
+      <div class="shop-home-megamenu-footer">
+        <span>{{ friendly_departments|length }} departments</span>
+        <a href="{{ url_for('search') }}">See all →</a>
+      </div>
+    </div>
+  </section>
+
+  {# ===== Quick Baskets strip =====
+       experiment: Quick Baskets — relegate or remove if not driving sales.
+       Routes are placeholders; tap → flash + redirect. ===== #}
+  <!-- experiment: Quick Baskets — relegate or remove if not driving sales -->
+  <section class="shop-home-strip">
+    <h3 class="shop-home-strip-heading">
+      Quick Baskets
+      <a href="{{ url_for('home') }}#shop-home-cat-toggle">see all →</a>
+    </h3>
+    <div class="shop-home-baskets">
+      {% for basket in quick_baskets %}
+      <a class="shop-home-basket" href="{{ url_for('quick_basket_placeholder', slug=basket.slug) }}">
+        <span class="shop-home-basket-soon">Coming soon</span>
+        <div class="shop-home-basket-em">{{ basket.emoji }}</div>
+        <div class="shop-home-basket-nm">{{ basket.name }}</div>
+        <div class="shop-home-basket-sub">{{ basket.items }} items</div>
+        <div class="shop-home-basket-px">starting at ₱{{ basket.price_from }}</div>
+      </a>
+      {% endfor %}
+    </div>
+  </section>
+
+  {# ===== Top Sellers This Week — real data from products.txn_count_24m ===== #}
+  {% if homepage_top_sellers %}
+  <section class="shop-home-pgrid">
+    <div class="shop-home-pgrid-top">
+      <h3>Top Sellers This Week</h3>
+      <span class="shop-home-sortpill"><em>Sort:</em> Best ▾</span>
+    </div>
+    <div class="shop-home-cards">
+      {% for product in homepage_top_sellers %}
+      {% set card_product = product %}
+      {% include "_product_card.html" %}
+      {% endfor %}
+    </div>
+  </section>
+  {% endif %}
+
+  {# Spacer so the sticky bottom nav doesn't cover the last card on mobile. #}
+  <div class="shop-home-bottom-spacer" aria-hidden="true"></div>
+
+  {# ===== Sticky bottom nav (mobile only) ===== #}
+  <nav class="shop-home-bnav" aria-label="Primary shop navigation">
+    <a class="shop-home-bnav-item shop-home-bnav-on" href="{{ url_for('home') }}">
+      <span class="shop-home-bnav-e">🏠</span>Home
+    </a>
+    <a class="shop-home-bnav-item" href="#shop-home-cat-toggle" onclick="document.getElementById('shop-home-cat-toggle').checked = true;">
+      <span class="shop-home-bnav-e">📂</span>Browse
+    </a>
+    <a class="shop-home-bnav-item" href="{{ url_for('search') }}">
+      <span class="shop-home-bnav-e">🔍</span>Search
+    </a>
+    <a class="shop-home-bnav-item shop-home-bnav-cart" href="{{ url_for('cart_page') }}">
+      <span class="shop-home-bnav-e">🛒</span>Cart
+      <span class="shop-home-bnav-ct js-cart-badge" data-cart-badge{% if not cart_count or cart_count == 0 %} style="display:none"{% endif %}>{{ cart_count or 0 }}</span>
+    </a>
+    {% if customer_logged_in %}
+    <a class="shop-home-bnav-item" href="https://royalcard.ansonsupermart.com" target="_blank" rel="noopener">
+      <span class="shop-home-bnav-e">♛</span>Royal
+    </a>
+    {% else %}
+    <a class="shop-home-bnav-item" href="{{ url_for('customer_login_page') }}">
+      <span class="shop-home-bnav-e">♛</span>Sign in
+    </a>
+    {% endif %}
+  </nav>
+
+</div>
+
+{# ===== Scoped homepage styles ===== #}
+
+
+{% endblock %}

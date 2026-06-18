@@ -1,0 +1,169 @@
+{% extends "base.html" %}
+
+
+{% block extra_head %}
+{% include "_shop_cat_styles.html" %}
+{% endblock %}
+{% block title %}{% if q %}Search: {{ q }}{% else %}Search{% endif %} | Anson Supermart{% endblock %}
+
+{% block content %}
+
+{# Search results page — uses the same M4 .shop-cat scoped styles as
+   category landing & brand. Includes a search input at the top since
+   this IS the search page. Department filter replaces the Brand pill. #}
+
+{% set base_qs = build_query_string(q=q, department=active_department,
+                                    sort=active_sort, price_band=active_price_band) %}
+{% set sort_label = sort_options[active_sort][1] if active_sort in sort_options else sort_options['top'][1] %}
+{% set has_filters = (active_department or active_price_band or (active_sort and active_sort != 'top')) %}
+
+<div class="shop-cat">
+
+  <nav class="shop-cat-crumbs" aria-label="Breadcrumb">
+    {% for crumb in breadcrumbs %}
+      {% if crumb.url %}<a href="{{ crumb.url }}">{{ crumb.label }}</a>{% else %}<span>{{ crumb.label }}</span>{% endif %}
+      {% if not loop.last %}<span class="shop-cat-crumbs-sep" aria-hidden="true">›</span>{% endif %}
+    {% endfor %}
+  </nav>
+
+  {# ===== Subhead: back + title + N items ===== #}
+  <div class="shop-cat-subhead">
+    <a class="shop-cat-back" href="{{ url_for('home') }}"
+       onclick="return storefrontGoBack('{{ url_for('home') }}');"
+       aria-label="Back">←</a>
+    <h1 class="shop-cat-title">
+      {% if q %}Results for "{{ q }}"
+      {% elif active_department %}{{ active_department.replace('-', ' ').title() }}
+      {% else %}Search{% endif %}
+    </h1>
+    {% if q or has_filters %}
+    <span class="shop-cat-count">{{ "{:,}".format(pager.total_count) }} item{{ '' if pager.total_count == 1 else 's' }}</span>
+    {% endif %}
+  </div>
+
+  {# ===== Search input (visible — this IS the search page) ===== #}
+  <form class="shop-cat-search-form" method="get" action="{{ url_for('search') }}" role="search"
+        style="padding: 10px 14px; background: #fff; border-bottom: 1px solid var(--rc-line); display: flex; gap: 8px;">
+    {% if active_department %}<input type="hidden" name="department" value="{{ active_department }}">{% endif %}
+    {% if active_sort and active_sort != 'top' %}<input type="hidden" name="sort" value="{{ active_sort }}">{% endif %}
+    {% if active_price_band %}<input type="hidden" name="price_band" value="{{ active_price_band }}">{% endif %}
+    <span class="searchbar-field" style="flex: 1;">
+      <input type="search" name="q" value="{{ q }}" autocomplete="off" data-search-input
+             placeholder="Search products, brand, or barcode…"
+             style="padding: 9px 12px; border: 1px solid var(--rc-line); border-radius: 10px; font-size: 14px; min-width: 0;">
+      <button type="button" class="searchbar-clear" data-search-clear aria-label="Clear search" hidden>×</button>
+    </span>
+    <button type="submit"
+            style="background: var(--rc-red); color: #fff; border: 0; border-radius: 10px; padding: 9px 16px; font-weight: 700; font-size: 14px;">Go</button>
+  </form>
+
+  {# ===== Did-you-mean + suggestions (intelligent search feedback) ===== #}
+  {% if q and (did_you_mean or search_mode == 'fuzzy') %}
+  <div class="search-dym" style="padding: 8px 14px; background: #fff7ed; border-bottom: 1px solid var(--rc-line); font-size: 13px;">
+    Showing results for
+    <a href="{{ url_for('search', q=did_you_mean or q) }}" style="font-weight: 700; color: var(--rc-red);">“{{ did_you_mean or q }}”</a>
+    {% if did_you_mean %}<span style="color: var(--rc-mut);">— searched instead of “{{ q }}”</span>{% endif %}
+  </div>
+  {% endif %}
+  {% if q and suggestions %}
+  <div class="search-suggest" style="padding: 8px 14px; background: #fff; border-bottom: 1px solid var(--rc-line); display: flex; flex-wrap: wrap; gap: 6px; align-items: center;">
+    <span style="font-size: 12px; color: var(--rc-mut);">Try:</span>
+    {% for s in suggestions %}
+    <a href="{{ url_for('search', q=s.term) }}"
+       style="font-size: 12.5px; padding: 4px 10px; border: 1px solid var(--rc-line); border-radius: 999px; background: #f8f8f8; color: #333; text-transform: capitalize;">{{ s.term }}</a>
+    {% endfor %}
+  </div>
+  {% endif %}
+
+  {# ===== Filter row: Department + Price + Sort ===== #}
+  <div class="shop-cat-filterbar">
+    <div class="shop-cat-filterbar-left">
+
+      {# ---- Department bottom-sheet ---- #}
+      <details class="shop-cat-sheet">
+        <summary class="shop-cat-filterpill {% if active_department %}shop-cat-filterpill-has{% endif %}">
+          <em>Dept</em>{% if active_department %}{{ active_department.replace('-', ' ').title() }}{% else %}All{% endif %} ▾
+        </summary>
+        <div class="shop-cat-sheet-body shop-cat-sheet-list">
+          {% set link_qs_all = build_query_string(q=q, sort=active_sort, price_band=active_price_band) %}
+          <a class="shop-cat-sheet-link {% if not active_department %}shop-cat-sheet-link-on{% endif %}"
+             href="{{ url_for('search') }}{% if link_qs_all %}?{{ link_qs_all }}{% endif %}">All Departments</a>
+          {% for dept in department_options %}
+          {% set link_qs = build_query_string(q=q, department=dept.slug, sort=active_sort, price_band=active_price_band) %}
+          <a class="shop-cat-sheet-link {% if active_department == dept.slug %}shop-cat-sheet-link-on{% endif %}"
+             href="{{ url_for('search') }}{% if link_qs %}?{{ link_qs }}{% endif %}">{{ dept.name }}</a>
+          {% endfor %}
+        </div>
+      </details>
+
+      {# ---- Price bottom-sheet ---- #}
+      <details class="shop-cat-sheet">
+        <summary class="shop-cat-filterpill {% if active_price_band %}shop-cat-filterpill-has{% endif %}">
+          <em>Price</em>{% if active_price_band and active_price_band in price_bands %}{{ price_bands[active_price_band][0] }}{% else %}Any{% endif %} ▾
+        </summary>
+        <div class="shop-cat-sheet-body shop-cat-sheet-list">
+          {% for band_key, band_info in price_bands.items() %}
+          {% set link_qs = build_query_string(q=q, department=active_department, sort=active_sort, price_band=(band_key if band_key else '')) %}
+          <a class="shop-cat-sheet-link {% if active_price_band == band_key %}shop-cat-sheet-link-on{% endif %}"
+             href="{{ url_for('search') }}{% if link_qs %}?{{ link_qs }}{% endif %}">{{ band_info[0] }}</a>
+          {% endfor %}
+        </div>
+      </details>
+
+    </div>
+
+    {# ---- Sort pill on the right ---- #}
+    <details class="shop-cat-sheet shop-cat-sheet-right">
+      <summary class="shop-cat-filterpill"><em>Sort:</em>{{ sort_label }} ▾</summary>
+      <div class="shop-cat-sheet-body shop-cat-sheet-list">
+        {% for sort_key, sort_info in sort_options.items() %}
+        {% set link_qs = build_query_string(q=q, department=active_department, sort=sort_key, price_band=active_price_band) %}
+        <a class="shop-cat-sheet-link {% if active_sort == sort_key %}shop-cat-sheet-link-on{% endif %}"
+           href="{{ url_for('search') }}{% if link_qs %}?{{ link_qs }}{% endif %}">{{ sort_info[1] }}</a>
+        {% endfor %}
+      </div>
+    </details>
+  </div>
+
+  {# ===== Product grid OR empty / blank-state ===== #}
+  <section class="shop-cat-grid-section">
+    {% if not q and not has_filters %}
+      <div class="shop-cat-empty">
+        <p>Search the catalog by product name, brand, category, supplier, or barcode.</p>
+        <p style="margin-top: 12px; color: var(--rc-mut); font-size: 12px;">Tip — you can scan a barcode here too.</p>
+      </div>
+    {% elif products %}
+      <div class="product-grid shop-cat-cards">
+        {% for product in products %}
+        {% set card_product = product %}
+        {% include "_product_card.html" %}
+        {% endfor %}
+      </div>
+
+      {% if pager.total_pages > 1 %}
+      <nav class="shop-cat-pager" aria-label="Page navigation">
+        {% if pager.has_prev %}
+        <a href="{{ url_for('search', q=q, department=active_department, sort=active_sort, price_band=active_price_band, page=pager.prev_page) }}">‹ Prev</a>
+        {% else %}<span class="disabled">‹ Prev</span>{% endif %}
+        <span>Page {{ pager.page }} of {{ pager.total_pages }}</span>
+        {% if pager.has_next %}
+        <a href="{{ url_for('search', q=q, department=active_department, sort=active_sort, price_band=active_price_band, page=pager.next_page) }}">Next ›</a>
+        {% else %}<span class="disabled">Next ›</span>{% endif %}
+      </nav>
+      {% else %}
+      <p class="shop-cat-end-hint">That's all the matches.</p>
+      {% endif %}
+    {% else %}
+      <div class="shop-cat-empty">
+        <p>No products match{% if q %} "{{ q }}"{% endif %}{% if active_department %} in {{ active_department.replace('-', ' ').title() }}{% endif %}.</p>
+        {% if has_filters %}<p><a href="{{ url_for('search', q=q) }}">Clear filters</a></p>{% endif %}
+      </div>
+    {% endif %}
+  </section>
+
+</div>
+
+
+{% include "_shop_home_bnav.html" ignore missing %}
+
+{% endblock %}

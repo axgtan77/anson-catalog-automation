@@ -3,15 +3,21 @@ from __future__ import annotations
 import os
 import sqlite3
 import hmac
+import hashlib
+import json
 import secrets
+import urllib.request
+import urllib.error
 from datetime import datetime
 from pathlib import Path
 from urllib.parse import urlencode, quote
 from functools import wraps
 
-from flask import Flask, abort, flash, jsonify, redirect, render_template, request, send_from_directory, session, url_for
+from flask import Flask, abort, flash, g, jsonify, redirect, render_template, request, send_from_directory, session, url_for
 from werkzeug.security import generate_password_hash, check_password_hash
 from werkzeug.utils import secure_filename
+
+import search_engine
 
 BASE_DIR = Path(__file__).resolve().parent
 STORE_DB_PATH = Path(os.environ.get('ANSON_STOREFRONT_DB', str(BASE_DIR / 'storefront_catalog.db')))
@@ -21,11 +27,34 @@ STOREFRONT_DEBUG = os.environ.get('STOREFRONT_DEBUG', '0').strip().lower() in {'
 STOREFRONT_SECRET_KEY = os.environ.get('STOREFRONT_SECRET_KEY', 'anson-storefront-dev')
 STOREFRONT_ADMIN_USERNAME = os.environ.get('STOREFRONT_ADMIN_USERNAME', 'admin')
 STOREFRONT_ADMIN_PASSWORD = os.environ.get('STOREFRONT_ADMIN_PASSWORD', 'ChangeMeStorefront123!')
+# Shared HMAC secret with the Royal Card PWA's shop-link Edge Function. When set,
+# /auth/royalcard accepts signed deeplinks from the PWA and auto-links/logs in the
+# customer by their Royal Card mobile. Empty => the route 404s (Phase A "off").
+ROYALCARD_LINK_SECRET = os.environ.get('ROYALCARD_LINK_SECRET', '').strip()
+ROYALCARD_PUBLIC_URL  = os.environ.get('ROYALCARD_PUBLIC_URL', 'https://royalcard.ansonsupermart.com')
+# Phase B — direct Supabase lookup so storefront-native sign-ins (i.e. customers who
+# log in at /account/login or register at /account/register without coming from the
+# PWA deeplink) can still be auto-linked to their Royal Card. Server-side, so we use
+# the service-role key (NOT the anon key) to bypass RLS for the members lookup.
+# Both blank => Phase B silently disabled (login/register behaviour is unchanged).
+SUPABASE_URL              = os.environ.get('SUPABASE_URL', '').strip().rstrip('/')
+SUPABASE_SERVICE_ROLE_KEY = os.environ.get('SUPABASE_SERVICE_ROLE_KEY', '').strip()
+# Store-side contact handles, surfaced as "Message us" buttons on customer-facing
+# pages (e.g. order status). Set these to whatever number/email staff actually monitor.
+# All optional — anything blank just hides the matching link.
+STORE_CONTACT_NAME  = os.environ.get('STORE_CONTACT_NAME',  'ANSON Supermart').strip()
+STORE_CONTACT_PHONE = os.environ.get('STORE_CONTACT_PHONE', '').strip()
+STORE_CONTACT_EMAIL = os.environ.get('STORE_CONTACT_EMAIL', '').strip()
+STORE_MESSENGER_URL = os.environ.get('STORE_MESSENGER_URL', '').strip()   # e.g. m.me/ansonsupermart
 
 app = Flask(__name__, template_folder=str(BASE_DIR / 'templates'), static_folder=str(BASE_DIR / 'static'))
 app.secret_key = STOREFRONT_SECRET_KEY
 
 SORT_OPTIONS = {
+    # 'relevance' is search-only: the real ordering comes from the FTS match
+    # rank (see search_products). The SQL clause here is just a safe fallback
+    # so the key never breaks a plain browse query.
+    'relevance': ("CASE WHEN COALESCE(priority, '') = 'TOP' THEN 0 ELSE 1 END, COALESCE(txn_count_24m, 0) DESC, name COLLATE NOCASE", 'Best Match'),
     'top': ("CASE WHEN COALESCE(priority, '') = 'TOP' THEN 0 ELSE 1 END, COALESCE(txn_count_24m, 0) DESC, name COLLATE NOCASE", 'Top Sellers'),
     'price_low': ('COALESCE(display_price, price_retail, 0) ASC, name COLLATE NOCASE', 'Price: Low to High'),
     'price_high': ('COALESCE(display_price, price_retail, 0) DESC, name COLLATE NOCASE', 'Price: High to Low'),
@@ -78,12 +107,13 @@ PAYMENT_PROOF_ALLOWED_EXTENSIONS = {'png', 'jpg', 'jpeg', 'gif', 'webp', 'pdf'}
 app.config['MAX_CONTENT_LENGTH'] = int(os.environ.get('STOREFRONT_MAX_UPLOAD_BYTES', str(6 * 1024 * 1024)))
 
 # Preferred simplified status model. Legacy status values remain accepted/mapped so old rows and links do not break.
-ORDER_STATUS_OPTIONS = ['NEW', 'REVIEWING', 'AWAITING_CUSTOMER_CONFIRMATION', 'FOR_RELEASE', 'RELEASED', 'CANCELLED']
+ORDER_STATUS_OPTIONS = ['NEW', 'REVIEWING', 'PICKING', 'AWAITING_CUSTOMER_CONFIRMATION', 'FOR_RELEASE', 'RELEASED', 'CANCELLED']
 LEGACY_ORDER_STATUS_OPTIONS = ['CONFIRMED', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY', 'COMPLETED', 'FULFILLED']
 ALL_ORDER_STATUS_OPTIONS = ORDER_STATUS_OPTIONS + LEGACY_ORDER_STATUS_OPTIONS
 ORDER_STATUS_LABELS = {
     'NEW': 'New',
     'REVIEWING': 'Reviewing',
+    'PICKING': 'Being Prepared',          # in-store staff is shopping the order
     'AWAITING_CUSTOMER_CONFIRMATION': 'Awaiting Customer Confirmation',
     'CONFIRMED': 'Awaiting Payment',
     'FOR_RELEASE': 'For Release',
@@ -133,6 +163,45 @@ BRAND_SPOTLIGHTS = [
     },
 ]
 BRAND_SPOTLIGHTS_BY_SLUG = {s['slug']: s for s in BRAND_SPOTLIGHTS}
+
+# 16 friendly "shopper-language" department buckets shown in the homepage
+# Browse Categories dropdown. 'department_slug' is the closest existing storefront
+# department. When a bucket's label is narrower than its department (several
+# buckets share one broad department, e.g. Pantry Supplies), 'category_slugs'
+# lists the real aisles it covers — the tile then links to /browse/<slug>, a
+# landing titled with the friendly name showing exactly those aisles, instead of
+# dumping the shopper into the whole broad department. Buckets without
+# 'category_slugs' link straight to their department page.
+FRIENDLY_DEPARTMENT_BUCKETS = [
+    {'emoji': '🍚', 'name': 'Staple Groceries',       'subtext': 'Coffee · Rice · Noodles',          'slug': 'staple-groceries',     'department_slug': 'pantry-supplies', 'category_slugs': ['rice-noodles-pasta', 'instant-noodles', 'cereals', 'sugar-sweeteners', 'baking', 'flour-mixes-baking-aids']},
+    {'emoji': '🍪', 'name': 'Snacks & Powdered Drinks','subtext': 'Candies · Chocolate',              'department_slug': 'snacks'},
+    {'emoji': '🥤', 'name': 'Beverages',              'subtext': 'Water · Softdrinks · Juice',       'department_slug': 'beverages'},
+    {'emoji': '🥖', 'name': 'Bakery & Bread',         'subtext': 'Biscuits · Pasta',                 'department_slug': 'bread-bakery'},
+    {'emoji': '🥩', 'name': 'Fresh Meat',             'subtext': 'Poultry · Pork · Beef',            'slug': 'fresh-meat',           'department_slug': 'fresh', 'category_slugs': ['chicken', 'pork', 'beef']},
+    {'emoji': '🐟', 'name': 'Fresh Fish & Seafood',   'subtext': 'Fillet · Tinapa',                  'slug': 'fresh-fish-seafood',   'department_slug': 'fresh', 'category_slugs': ['fresh-seafood']},
+    {'emoji': '🥫', 'name': 'Canned & Processed',     'subtext': 'Hotdog · Sardines · Tuna',         'slug': 'canned-processed',     'department_slug': 'pantry-supplies', 'category_slugs': ['canned-goods', 'canned-seafood', 'canned-meat', 'canned-fruits', 'canned-vegetables']},
+    {'emoji': '🧂', 'name': 'Seasonings & Imported',  'subtext': 'Sauces · Milk · Specialty',        'slug': 'seasonings-imported',  'department_slug': 'pantry-supplies', 'category_slugs': ['sauce-spices-spreads-condiments', 'herbs-spices', 'broth-cubes-soup-bases', 'breakfast-spreads', 'culinary-milk-cream']},
+    {'emoji': '🫒', 'name': 'Cooking Oil',            'subtext': 'Vegetable · Canola · Corn',        'slug': 'cooking-oil',          'department_slug': 'pantry-supplies', 'category_slugs': ['oil']},
+    {'emoji': '🧴', 'name': 'Personal Care',          'subtext': 'Hair · Body · Oral',               'department_slug': 'personal-care'},
+    {'emoji': '🧼', 'name': 'Laundry & Cleaning',     'subtext': 'Detergent · Fabric care',          'slug': 'laundry-cleaning',     'department_slug': 'home-care', 'category_slugs': ['laundry-items', 'fabric-conditioners', 'dishwashing', 'household-cleaners', 'disinfectants']},
+    {'emoji': '🧺', 'name': 'Household & Paper',      'subtext': 'Tissue · Plastics',                'slug': 'household-paper',      'department_slug': 'home-care', 'category_slugs': ['cleaning-tools', 'other-home-items', 'trash-bags-disposable-needs', 'air-fresheners-deodorizers', 'pest-control']},
+    {'emoji': '🍼', 'name': 'Baby Care',              'subtext': 'Diapers · Milk · Wipes',           'department_slug': 'baby-kids'},
+    {'emoji': '💊', 'name': 'OTC Medicine',           'subtext': 'Vitamins · First aid',             'department_slug': 'pharmacies'},
+    {'emoji': '🐾', 'name': 'Pet & General Merch',    'subtext': 'Pet food · Plastics · Toys',       'department_slug': 'pets'},
+    {'emoji': '📚', 'name': 'Office & School',        'subtext': 'Paper · Pens · Notebooks',         'department_slug': 'office-school-supplies'},
+]
+FRIENDLY_BUCKETS_BY_SLUG = {b['slug']: b for b in FRIENDLY_DEPARTMENT_BUCKETS if b.get('slug')}
+
+# Static placeholder quick-basket recipes. These are experimental UX bets —
+# wired to a placeholder route that flashes "coming soon". We measure tap
+# rate before investing in actual basket-fill logic.
+QUICK_BASKETS = [
+    {'slug': 'adobo',     'emoji': '🍚', 'name': 'Adobo Night',    'items': 6, 'price_from': 285},
+    {'slug': 'pancit',    'emoji': '🍜', 'name': 'Pancit Canton',  'items': 5, 'price_from': 180},
+    {'slug': 'breakfast', 'emoji': '🍳', 'name': 'Breakfast Run',  'items': 7, 'price_from': 395},
+    {'slug': 'sinigang',  'emoji': '🥬', 'name': 'Sinigang',       'items': 6, 'price_from': 245},
+]
+QUICK_BASKET_SLUGS = {b['slug'] for b in QUICK_BASKETS}
 ADMIN_SESSION_KEY = 'storefront_admin_authenticated'
 ADMIN_USERNAME_SESSION_KEY = 'storefront_admin_username'
 CUSTOMER_SESSION_KEY = 'storefront_customer_id'
@@ -167,6 +236,12 @@ def ensure_runtime_schema() -> None:
             conn.execute("ALTER TABLE order_requests ADD COLUMN confirmed_total REAL")
         if 'customer_confirmation_note' not in order_request_columns:
             conn.execute("ALTER TABLE order_requests ADD COLUMN customer_confirmation_note TEXT")
+        # Phase C — Royal Card redemption at checkout. Stores the points
+        # debited from the member's balance for this online order. NULL or 0
+        # means no points were redeemed. Cancellation flips the linked
+        # bonus_ledger negative row to 'cancelled' so settle_bonuses skips it.
+        if 'points_redeemed' not in order_request_columns:
+            conn.execute("ALTER TABLE order_requests ADD COLUMN points_redeemed INTEGER NOT NULL DEFAULT 0")
         payment_columns = {
             'payment_status': "TEXT NOT NULL DEFAULT 'UNPAID'",
             'payment_method': 'TEXT',
@@ -218,13 +293,21 @@ def ensure_runtime_schema() -> None:
             conn.execute("ALTER TABLE order_request_items ADD COLUMN selling_option_label TEXT")
         if 'selling_option_barcode' not in order_item_columns:
             conn.execute("ALTER TABLE order_request_items ADD COLUMN selling_option_barcode TEXT")
+        # --- Picker MVP: per-item pick state ---
+        if 'pick_status' not in order_item_columns:
+            conn.execute("ALTER TABLE order_request_items ADD COLUMN pick_status TEXT NOT NULL DEFAULT 'PENDING'")
+        if 'picked_at' not in order_item_columns:
+            conn.execute("ALTER TABLE order_request_items ADD COLUMN picked_at TEXT")
+        if 'picked_by' not in order_item_columns:
+            conn.execute("ALTER TABLE order_request_items ADD COLUMN picked_by TEXT")
         conn.execute(
             """
             UPDATE order_request_items
             SET original_requested_qty = COALESCE(original_requested_qty, requested_qty),
                 original_quoted_price = COALESCE(original_quoted_price, quoted_price),
                 removed = COALESCE(removed, 0),
-                selling_option_key = COALESCE(NULLIF(selling_option_key, ''), 'retail')
+                selling_option_key = COALESCE(NULLIF(selling_option_key, ''), 'retail'),
+                pick_status = COALESCE(NULLIF(pick_status, ''), 'PENDING')
             """
         )
         # --- Customer accounts migration ---
@@ -244,6 +327,12 @@ def ensure_runtime_schema() -> None:
         """)
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone) WHERE phone IS NOT NULL")
         conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_email ON customers(email) WHERE email IS NOT NULL")
+        # Royal Card linkage (Phase A) — populated when a customer arrives via the
+        # signed /auth/royalcard deeplink or types their card number on profile.
+        customer_columns = {row['name'] for row in conn.execute("PRAGMA table_info(customers)").fetchall()}
+        if 'card_no' not in customer_columns:
+            conn.execute("ALTER TABLE customers ADD COLUMN card_no TEXT")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_customers_card_no ON customers(card_no) WHERE card_no IS NOT NULL")
         if 'customer_id' not in order_request_columns:
             conn.execute("ALTER TABLE order_requests ADD COLUMN customer_id INTEGER REFERENCES customers(id)")
         conn.execute("CREATE INDEX IF NOT EXISTS idx_order_requests_customer_id ON order_requests(customer_id)")
@@ -254,14 +343,307 @@ def ensure_runtime_schema() -> None:
             conn.execute("ALTER TABLE products ADD COLUMN alpha_visible INTEGER NOT NULL DEFAULT 0")
         if 'default_selling_option' not in product_columns:
             conn.execute("ALTER TABLE products ADD COLUMN default_selling_option TEXT NOT NULL DEFAULT 'retail'")
+        if 'exclusive_selling_option' not in product_columns:
+            conn.execute("ALTER TABLE products ADD COLUMN exclusive_selling_option INTEGER NOT NULL DEFAULT 0")
         if 'pack_quantity' not in product_columns:
             conn.execute("ALTER TABLE products ADD COLUMN pack_quantity INTEGER")
+        # --- Milestone 5: pickup time slots ---
+        # Replaces the legacy free-text `preferred_schedule` with bookable
+        # 2-hour windows so staff can plan capacity. The legacy column
+        # stays around (we also write a human-readable string into it)
+        # so existing admin views keep working unchanged.
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS pickup_slots (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                slot_date     TEXT NOT NULL,        -- ISO 'YYYY-MM-DD'
+                start_time    TEXT NOT NULL,        -- 'HH:MM' 24h
+                end_time      TEXT NOT NULL,        -- 'HH:MM' 24h
+                capacity      INTEGER NOT NULL DEFAULT 8,
+                is_active     INTEGER NOT NULL DEFAULT 1,
+                notes         TEXT,
+                created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(slot_date, start_time, end_time)
+            );
+            CREATE INDEX IF NOT EXISTS idx_pickup_slots_date_active ON pickup_slots(slot_date, is_active);
+        """)
+        if 'pickup_slot_id' not in order_request_columns:
+            conn.execute(
+                "ALTER TABLE order_requests ADD COLUMN pickup_slot_id INTEGER REFERENCES pickup_slots(id)"
+            )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_order_requests_pickup_slot_id ON order_requests(pickup_slot_id) WHERE pickup_slot_id IS NOT NULL"
+        )
         conn.commit()
     finally:
         conn.close()
 
 
 ensure_runtime_schema()
+
+
+# Synonym / local-term map for search query expansion. Seeded in
+# search_engine; an optional search_synonyms.csv (term,alias1;alias2) lets the
+# store grow it without code changes.
+SEARCH_SYNONYMS = search_engine.load_synonyms(BASE_DIR / 'search_synonyms.csv')
+
+
+def warm_search_index() -> None:
+    """Build the FTS search index at boot if the catalog changed. Cheap when
+    already fresh; failures must never block startup."""
+    try:
+        conn = get_conn()
+        try:
+            search_engine.ensure_search_index(conn)
+        finally:
+            conn.close()
+    except Exception as exc:  # pragma: no cover - defensive
+        app.logger.warning("search index warm-up skipped: %s", exc)
+
+
+warm_search_index()
+
+
+# ---------------------------------------------------------------------------
+# Milestone 5 — pickup time slot helpers
+# ---------------------------------------------------------------------------
+# Default 2-hour windows seeded at first boot. Standard ANSON storefront
+# pickup times — adjust here and re-seed (or insert directly) if hours shift.
+_DEFAULT_PICKUP_WINDOWS = [
+    ('10:00', '12:00'),
+    ('14:00', '16:00'),
+    ('16:00', '18:00'),
+]
+_DEFAULT_PICKUP_CAPACITY = 8
+
+
+def _format_hour_12(hhmm: str) -> str:
+    """Convert '14:00' -> '2 PM', '14:30' -> '2:30 PM'. Falls back to the
+    raw input on bad data so the UI never blows up on a malformed slot."""
+    try:
+        h, m = hhmm.split(':')
+        hour = int(h)
+        minute = int(m)
+    except (ValueError, AttributeError):
+        return hhmm or ''
+    suffix = 'AM' if hour < 12 else 'PM'
+    h12 = hour % 12 or 12
+    if minute:
+        return f"{h12}:{minute:02d} {suffix}"
+    return f"{h12} {suffix}"
+
+
+def _format_slot_time_range(start: str, end: str) -> str:
+    """'14:00','16:00' -> '2-4 PM'  ·  '10:00','12:00' -> '10-12 PM'.
+    If the suffixes differ (e.g. 10 AM -> 12 PM) we keep both."""
+    try:
+        s_hour = int(start.split(':')[0])
+        e_hour = int(end.split(':')[0])
+    except (ValueError, AttributeError, IndexError):
+        return f"{start}-{end}"
+    s_suffix = 'AM' if s_hour < 12 else 'PM'
+    e_suffix = 'AM' if e_hour < 12 else 'PM'
+    s12 = s_hour % 12 or 12
+    e12 = e_hour % 12 or 12
+    s_min = start.split(':')[1] if ':' in start else '00'
+    e_min = end.split(':')[1] if ':' in end else '00'
+    s_label = f"{s12}:{s_min}" if s_min != '00' else f"{s12}"
+    e_label = f"{e12}:{e_min}" if e_min != '00' else f"{e12}"
+    if s_suffix == e_suffix:
+        return f"{s_label}-{e_label} {e_suffix}"
+    return f"{s_label} {s_suffix}-{e_label} {e_suffix}"
+
+
+def _format_slot_date_label(slot_date: str, today: 'datetime | None' = None) -> str:
+    """Today/Tom/short weekday label for the slot card. Falls back to the
+    raw date string on bad input so the UI keeps rendering."""
+    from datetime import date, timedelta
+    try:
+        d = datetime.strptime(slot_date, '%Y-%m-%d').date()
+    except (ValueError, TypeError):
+        return slot_date or ''
+    today_d = (today.date() if today else datetime.now().date())
+    delta = (d - today_d).days
+    if delta == 0:
+        return 'Today'
+    if delta == 1:
+        return 'Tom'
+    # 2-6 days out: weekday short name. Beyond that: 'Jun 24' style.
+    if 2 <= delta <= 6:
+        return d.strftime('%a')
+    return d.strftime('%b %d')
+
+
+def seed_default_slots(days_ahead: int = 7) -> int:
+    """If `pickup_slots` is empty for the next `days_ahead` days, populate
+    them with the standard 2-hour windows. Idempotent — safe to call from
+    every boot. Returns the number of rows inserted."""
+    from datetime import date, timedelta
+    today = datetime.now().date()
+    conn = get_conn()
+    try:
+        # Cheap pre-check: do we already have *any* future-active rows? If so
+        # leave seeding alone so manual edits aren't overwritten.
+        row = conn.execute(
+            "SELECT COUNT(*) AS n FROM pickup_slots WHERE slot_date >= ? AND is_active = 1",
+            (today.isoformat(),),
+        ).fetchone()
+        if row and (row['n'] or 0) > 0:
+            return 0
+        inserted = 0
+        with conn:
+            for offset in range(days_ahead):
+                day = today + timedelta(days=offset)
+                for start, end in _DEFAULT_PICKUP_WINDOWS:
+                    cur = conn.execute(
+                        """
+                        INSERT OR IGNORE INTO pickup_slots
+                            (slot_date, start_time, end_time, capacity, is_active)
+                        VALUES (?, ?, ?, ?, 1)
+                        """,
+                        (day.isoformat(), start, end, _DEFAULT_PICKUP_CAPACITY),
+                    )
+                    inserted += cur.rowcount
+        return inserted
+    finally:
+        conn.close()
+
+
+seed_default_slots(days_ahead=7)
+
+
+def _slot_to_dict(row: sqlite3.Row, booked_count: int = 0, today: 'datetime | None' = None) -> dict:
+    capacity = int(row['capacity'] or 0)
+    capacity_left = max(0, capacity - int(booked_count or 0))
+    date_label = _format_slot_date_label(row['slot_date'], today=today)
+    time_label = _format_slot_time_range(row['start_time'], row['end_time'])
+    return {
+        'id': row['id'],
+        'slot_date': row['slot_date'],
+        'start_time': row['start_time'],
+        'end_time': row['end_time'],
+        'capacity': capacity,
+        'booked_count': int(booked_count or 0),
+        'capacity_left': capacity_left,
+        'is_active': bool(row['is_active']),
+        'label_date': date_label,
+        'label_time': time_label,
+        'label_short': f"{date_label} {time_label}",
+        # Human-readable string for the legacy `preferred_schedule` column.
+        'label_legacy': f"{date_label} ({row['slot_date']}) {time_label}",
+    }
+
+
+def fetch_available_slots(days_ahead: int = 3) -> list[dict]:
+    """Return active slots from today through `days_ahead` days that still
+    have capacity. Used to render the slot picker in the checkout view.
+    Booked count = non-CANCELLED order_requests with that pickup_slot_id."""
+    from datetime import timedelta
+    today = datetime.now().date()
+    horizon = today + timedelta(days=days_ahead)
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            """
+            SELECT s.*,
+                   COALESCE((
+                       SELECT COUNT(*) FROM order_requests o
+                       WHERE o.pickup_slot_id = s.id
+                         AND COALESCE(o.status, 'NEW') != 'CANCELLED'
+                   ), 0) AS booked_count
+            FROM pickup_slots s
+            WHERE s.is_active = 1
+              AND s.slot_date >= ?
+              AND s.slot_date <= ?
+            ORDER BY s.slot_date ASC, s.start_time ASC
+            """,
+            (today.isoformat(), horizon.isoformat()),
+        ).fetchall()
+        results = []
+        for row in rows:
+            slot = _slot_to_dict(row, booked_count=row['booked_count'])
+            if slot['capacity_left'] > 0:
+                results.append(slot)
+        return results
+    finally:
+        conn.close()
+
+
+def fetch_pickup_slot(slot_id: int) -> dict | None:
+    """Fetch a single slot by id, with booked_count, for label rendering
+    after the order has been placed."""
+    if not slot_id:
+        return None
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            """
+            SELECT s.*,
+                   COALESCE((
+                       SELECT COUNT(*) FROM order_requests o
+                       WHERE o.pickup_slot_id = s.id
+                         AND COALESCE(o.status, 'NEW') != 'CANCELLED'
+                   ), 0) AS booked_count
+            FROM pickup_slots s
+            WHERE s.id = ?
+            """,
+            (slot_id,),
+        ).fetchone()
+        return _slot_to_dict(row, booked_count=row['booked_count']) if row else None
+    finally:
+        conn.close()
+
+
+def book_pickup_slot(order_request_id: int, slot_id: int) -> bool:
+    """Atomically attach `slot_id` to `order_request_id`. Returns False if
+    the slot is inactive or already full at booking time. Race-safe: we
+    re-check capacity inside the same transaction before writing."""
+    if not order_request_id or not slot_id:
+        return False
+    conn = get_conn()
+    try:
+        with conn:
+            slot_row = conn.execute(
+                "SELECT id, capacity, is_active FROM pickup_slots WHERE id = ?",
+                (slot_id,),
+            ).fetchone()
+            if not slot_row or not slot_row['is_active']:
+                return False
+            # Booked = non-CANCELLED order_requests already on this slot.
+            booked_row = conn.execute(
+                """
+                SELECT COUNT(*) AS n FROM order_requests
+                WHERE pickup_slot_id = ?
+                  AND COALESCE(status, 'NEW') != 'CANCELLED'
+                  AND id != ?
+                """,
+                (slot_id, order_request_id),
+            ).fetchone()
+            booked = int(booked_row['n'] or 0) if booked_row else 0
+            if booked >= int(slot_row['capacity'] or 0):
+                return False
+            conn.execute(
+                "UPDATE order_requests SET pickup_slot_id = ? WHERE id = ?",
+                (slot_id, order_request_id),
+            )
+        return True
+    finally:
+        conn.close()
+
+
+def order_request_id_for_code(request_code: str) -> int | None:
+    """Look up the numeric id for a request_code. Used by /checkout after
+    create_order_request() returns the public code."""
+    if not request_code:
+        return None
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT id FROM order_requests WHERE request_code = ?",
+            (request_code,),
+        ).fetchone()
+        return row['id'] if row else None
+    finally:
+        conn.close()
 
 
 def storefront_admin_required(view):
@@ -613,6 +995,41 @@ def fetch_categories_for_department(department_slug: str) -> list[dict]:
         conn.close()
 
 
+def fetch_brands_for_view(department_slug: str, category_slug: str | None = None,
+                          limit: int = 60) -> list[dict]:
+    """List the brands present in the current department/sub-department view,
+    excluding out-of-stock items so the brand sheet only shows brands the
+    shopper can actually buy. Sorted by product count desc so the heaviest
+    brands surface first; capped to keep the bottom-sheet manageable."""
+    clauses = [
+        "active = 1",
+        "COALESCE(stock_status, 'in_stock') != 'out_of_stock'",
+        "brand IS NOT NULL",
+        "TRIM(brand) <> ''",
+        "department_slug = ?",
+    ]
+    params: list[object] = [department_slug]
+    if category_slug:
+        clauses.append("category_slug = ?")
+        params.append(category_slug)
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT brand, COUNT(*) AS product_count
+            FROM products
+            WHERE {' AND '.join(clauses)}
+            GROUP BY brand
+            ORDER BY product_count DESC, brand COLLATE NOCASE
+            LIMIT ?
+            """,
+            [*params, limit],
+        ).fetchall()
+        return [{'name': row['brand'], 'product_count': row['product_count']} for row in rows]
+    finally:
+        conn.close()
+
+
 def fetch_department_header(department_slug: str) -> dict | None:
     conn = get_conn()
     try:
@@ -725,6 +1142,426 @@ def clear_editing_state() -> None:
         session.modified = True
 
 
+def linked_royal_card(customer_id: int | None) -> str:
+    """Return the customer's linked Royal Card EAN-13 if any, else ''."""
+    if not customer_id:
+        return ''
+    conn = get_conn()
+    try:
+        row = conn.execute("SELECT card_no FROM customers WHERE id = ?", (customer_id,)).fetchone()
+        return (row['card_no'] or '').strip() if row else ''
+    finally:
+        conn.close()
+
+
+def royalcard_member_lookup(phone_e164: str) -> dict | None:
+    """Phase B: ask Supabase whether this +63 mobile is a Royal Card member.
+
+    Returns {'card_no': '...', 'name': '...'} on a hit, else None. Silent no-op
+    when SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is unset (Phase B disabled).
+    Fail-open: any HTTP error / timeout / parse failure returns None so the
+    storefront sign-in/registration still succeeds — just without the link.
+    """
+    if not (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY):
+        return None
+    phone = (phone_e164 or '').strip()
+    if not phone:
+        return None
+    try:
+        qs = urlencode({
+            'phone_e164': f'eq.{phone}',
+            'select':     'card_no,name',
+            'limit':      '1',
+        })
+        url = f"{SUPABASE_URL}/rest/v1/members?{qs}"
+        req = urllib.request.Request(url, headers={
+            'apikey':        SUPABASE_SERVICE_ROLE_KEY,
+            'Authorization': f'Bearer {SUPABASE_SERVICE_ROLE_KEY}',
+            'Accept':        'application/json',
+        })
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            data = json.loads(resp.read().decode('utf-8') or '[]')
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, OSError):
+        return None
+    if not isinstance(data, list) or not data:
+        return None
+    row = data[0] or {}
+    card_no = (row.get('card_no') or '').strip()
+    if not (card_no.isdigit() and len(card_no) == 13):
+        return None
+    return {'card_no': card_no, 'name': (row.get('name') or '').strip()}
+
+
+def _try_link_royal_card_to_customer(customer_id: int | None) -> dict | None:
+    """Phase B: stamp customers.card_no when the customer's phone matches a
+    Royal Card member in Supabase. Idempotent — if card_no is already set, or
+    Phase B is disabled, or the phone doesn't match, returns None.
+
+    Called from the /account/login and /account/register success paths after
+    the customers row exists and the session is set. The caller flashes a
+    success message when this returns the linked member dict.
+    """
+    if not customer_id:
+        return None
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT id, phone, display_name, card_no FROM customers WHERE id = ?",
+            (customer_id,),
+        ).fetchone()
+        if not row:
+            return None
+        # Already linked (e.g. Phase A handled it earlier) — silent no-op.
+        if (row['card_no'] or '').strip():
+            return None
+        phone_intl = normalize_ph_phone(row['phone'] or '')
+        if not phone_intl:
+            return None
+        match = royalcard_member_lookup(phone_intl)
+        if not match:
+            return None
+        # FoxBase stores names as 'LAST, FIRST MIDDLE' — flip for display, same
+        # transform Phase A does for parity.
+        member_name = match.get('name') or ''
+        display = member_name
+        if ',' in member_name:
+            last, first = member_name.split(',', 1)
+            display = f"{first.strip()} {last.strip()}".strip()
+        display = display or (row['display_name'] or 'Royal Card Member')
+
+        updates = ["card_no = ?"]
+        params: list = [match['card_no']]
+        # Only overwrite display_name if the storefront one is empty/placeholder.
+        existing_name = (row['display_name'] or '').strip()
+        if not existing_name or existing_name.lower().startswith('royal card member'):
+            updates.append("display_name = ?")
+            params.append(display)
+        updates.append("updated_at = CURRENT_TIMESTAMP")
+        params.append(customer_id)
+        with conn:
+            conn.execute(f"UPDATE customers SET {', '.join(updates)} WHERE id = ?", params)
+        return {'card_no': match['card_no'], 'name': display}
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Phase C — Royal Card balance / pending bonuses / online redemption helpers
+# ---------------------------------------------------------------------------
+# All of these silently fall back to None / [] when Phase B Supabase env vars
+# are unset or any HTTP/JSON error occurs. The storefront's guest experience
+# is *never* affected — these are only invoked when a customer has a linked
+# card_no. Per-request caching via flask.g keeps each page to at most one
+# Supabase call per resource.
+
+# Max points the customer may redeem on a single online order. Keep this
+# small while the feature ships — easier to roll back, easier to support.
+ROYALCARD_ONLINE_REDEMPTION_CAP = 500
+
+# Friendly label shown for each `bonus_ledger.reason`. Anything not in this map
+# is title-cased with underscores -> spaces.
+ROYALCARD_BONUS_REASON_LABELS = {
+    'welcome': 'Welcome bonus',
+    'referral': 'Referral',
+    'birthday': 'Birthday',
+    'profile': 'Profile completion',
+    'promo': 'Promo',
+    'alpha_tester': 'Alpha tester',
+    'online_redemption': 'Online redemption',
+}
+
+
+def _royalcard_supabase_ready() -> bool:
+    return bool(SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY)
+
+
+def _royalcard_rest_request(method: str, path: str, *, body: dict | list | None = None,
+                            extra_headers: dict | None = None, timeout: float = 3.0):
+    """Internal: thin urllib.request wrapper for Supabase REST. Returns the
+    parsed JSON body on success, None on any error. Caller decides what an
+    empty result means. Service-role bypasses RLS (same as Phase B)."""
+    if not _royalcard_supabase_ready():
+        return None
+    url = f"{SUPABASE_URL}/rest/v1/{path.lstrip('/')}"
+    headers = {
+        'apikey':        SUPABASE_SERVICE_ROLE_KEY,
+        'Authorization': f'Bearer {SUPABASE_SERVICE_ROLE_KEY}',
+        'Accept':        'application/json',
+    }
+    data: bytes | None = None
+    if body is not None:
+        headers['Content-Type'] = 'application/json'
+        data = json.dumps(body).encode('utf-8')
+    if extra_headers:
+        headers.update(extra_headers)
+    try:
+        req = urllib.request.Request(url, data=data, headers=headers, method=method)
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode('utf-8') or 'null'
+        return json.loads(raw)
+    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, ValueError, OSError):
+        return None
+
+
+def fetch_member_balance(card_no: str | None) -> int | None:
+    """Phase C1 — current point balance for `card_no` from Supabase `member_card`
+    (security_invoker view; service_role bypasses RLS). Returns int balance, or
+    None if Phase C is disabled, card_no is empty, or any Supabase error.
+
+    Cached on flask.g per-request so a single page render makes at most one
+    Supabase call even when both the chip and the checkout form ask for it.
+    No long-lived cache — a redemption elsewhere would go stale immediately.
+    """
+    card = (card_no or '').strip()
+    if not card or not card.isdigit() or len(card) != 13:
+        return None
+    if not _royalcard_supabase_ready():
+        return None
+    try:
+        cache = g.setdefault('_royalcard_balance_cache', {})
+    except RuntimeError:
+        # Outside a request context (e.g. cron-style invocation). Skip cache.
+        cache = None
+    if cache is not None and card in cache:
+        return cache[card]
+    qs = urlencode({
+        'card_no': f'eq.{card}',
+        'select':  'points_balance',
+        'limit':   '1',
+    })
+    data = _royalcard_rest_request('GET', f'member_card?{qs}')
+    balance: int | None = None
+    if isinstance(data, list) and data:
+        raw = (data[0] or {}).get('points_balance')
+        try:
+            balance = int(raw) if raw is not None else None
+        except (TypeError, ValueError):
+            balance = None
+    if cache is not None:
+        cache[card] = balance
+    return balance
+
+
+def fetch_member_pending_bonuses(card_no: str | None) -> list[dict]:
+    """Phase C2 — pending rows for `card_no` from Supabase `bonus_ledger`.
+    Returns list of dicts with keys: points (int), reason (str),
+    reason_label (friendly), detail (str), created_at (str), peso_value (int).
+    Returns [] on any error or when Phase C is disabled. Negative-point rows
+    (redemptions) are excluded — this list is intended to surface bonuses
+    that are *waiting* to land in the member's balance.
+
+    Cached on flask.g per-request, same as fetch_member_balance.
+    """
+    card = (card_no or '').strip()
+    if not card or not card.isdigit() or len(card) != 13:
+        return []
+    if not _royalcard_supabase_ready():
+        return []
+    try:
+        cache = g.setdefault('_royalcard_pending_cache', {})
+    except RuntimeError:
+        cache = None
+    if cache is not None and card in cache:
+        return cache[card]
+    qs = urlencode({
+        'card_no': f'eq.{card}',
+        'status':  'eq.pending',
+        'select':  'points,reason,detail,created_at',
+        'order':   'created_at.desc',
+    })
+    data = _royalcard_rest_request('GET', f'bonus_ledger?{qs}')
+    result: list[dict] = []
+    if isinstance(data, list):
+        for row in data:
+            if not isinstance(row, dict):
+                continue
+            try:
+                pts = int(row.get('points') or 0)
+            except (TypeError, ValueError):
+                pts = 0
+            # Surface only positive (pending earn) rows on the profile page;
+            # online-redemption negatives are an internal accounting concern.
+            if pts <= 0:
+                continue
+            reason = (row.get('reason') or '').strip()
+            friendly = ROYALCARD_BONUS_REASON_LABELS.get(
+                reason, reason.replace('_', ' ').capitalize() or 'Bonus'
+            )
+            result.append({
+                'points':       pts,
+                'reason':       reason,
+                'reason_label': friendly,
+                'detail':       (row.get('detail') or '').strip(),
+                'created_at':   (row.get('created_at') or '')[:10],
+                'peso_value':   pts,   # 1 pt = ~P1 in-store; UI shows "value"
+            })
+    if cache is not None:
+        cache[card] = result
+    return result
+
+
+def apply_redemption_to_ledger(card_no: str, points: int, order_request_id: int,
+                                order_code: str) -> dict | None:
+    """Phase C3/C4 — write a NEGATIVE bonus_ledger row representing the
+    customer's redemption at online checkout. Returns the inserted row dict
+    (with at least 'id') on success, or None on any error. Idempotency is
+    delegated to the caller (the order should only insert one redemption
+    row per submit; we tag detail='order:<code>' so duplicates are easy to
+    spot if a retry sneaks through)."""
+    card = (card_no or '').strip()
+    if not card or not card.isdigit() or len(card) != 13:
+        return None
+    try:
+        pts = int(points)
+    except (TypeError, ValueError):
+        return None
+    if pts <= 0:
+        return None
+    if not _royalcard_supabase_ready():
+        return None
+    payload = [{
+        'card_no':  card,
+        'points':   -pts,
+        'reason':   'online_redemption',
+        'detail':   f'order:{order_code}',
+        'status':   'pending',
+    }]
+    data = _royalcard_rest_request(
+        'POST', 'bonus_ledger',
+        body=payload,
+        extra_headers={'Prefer': 'return=representation'},
+    )
+    if isinstance(data, list) and data:
+        row = data[0] or {}
+        if 'id' in row:
+            return row
+    return None
+
+
+def cancel_redemption_for_order(order_request_id: int, order_code: str) -> bool:
+    """Phase C3 edge case — when an order is cancelled, flip its pending
+    online-redemption ledger row to 'cancelled' so settle_bonuses.py skips
+    it and the points aren't debited from the member at EOD. Idempotent;
+    returns True if a row was flipped (or there was nothing to flip)."""
+    if not order_code:
+        return False
+    if not _royalcard_supabase_ready():
+        # Phase C disabled — nothing to cancel. Treat as success so the
+        # cancel flow isn't blocked.
+        return True
+    qs = urlencode({
+        'reason':  'eq.online_redemption',
+        'detail':  f'eq.order:{order_code}',
+        'status':  'eq.pending',
+    })
+    data = _royalcard_rest_request(
+        'PATCH', f'bonus_ledger?{qs}',
+        body={'status': 'cancelled'},
+        extra_headers={'Prefer': 'return=minimal'},
+    )
+    # PATCH with return=minimal returns null on success; None can also mean
+    # error. We accept either — the cancel path shouldn't fail loudly.
+    return True
+
+
+def customer_first_name_from(display_name: str | None) -> str:
+    """Pull the first word out of a display name for casual greeting use.
+    Empty input → empty string (caller chooses the fallback)."""
+    if not display_name:
+        return ''
+    first = display_name.strip().split()
+    return first[0] if first else ''
+
+
+# Order statuses that mean "the customer has actually received goods" — used
+# to decide whether to surface the "Reorder last basket" hero. We accept both
+# the modern RELEASED state and the legacy synonyms (COMPLETED/FULFILLED).
+_FULFILLED_ORDER_STATUSES = ('RELEASED', 'COMPLETED', 'FULFILLED')
+
+
+def fetch_customer_last_fulfilled_order(customer_id: int | None) -> dict | None:
+    """Look up the most recent fulfilled order for this customer plus a tiny
+    summary (item count, total, date) for the Reorder hero card. Returns None
+    when the customer has no completed orders yet."""
+    if not customer_id:
+        return None
+    placeholders = ','.join('?' for _ in _FULFILLED_ORDER_STATUSES)
+    conn = get_conn()
+    try:
+        order_row = conn.execute(
+            f"""
+            SELECT id, request_code, confirmed_total, item_count, created_at
+            FROM order_requests
+            WHERE customer_id = ?
+              AND status IN ({placeholders})
+            ORDER BY COALESCE(confirmed_at, updated_at, created_at) DESC, id DESC
+            LIMIT 1
+            """,
+            (customer_id, *_FULFILLED_ORDER_STATUSES),
+        ).fetchone()
+        if not order_row:
+            return None
+        # Live count of non-removed items + their quoted_price total. The
+        # stored confirmed_total may be stale if the picker pulled items, so
+        # we re-tally from order_request_items for honesty.
+        agg = conn.execute(
+            """
+            SELECT COUNT(*) AS n,
+                   COALESCE(SUM(requested_qty * COALESCE(quoted_price, 0)), 0) AS total
+            FROM order_request_items
+            WHERE order_request_id = ? AND removed = 0
+            """,
+            (order_row['id'],),
+        ).fetchone()
+        live_item_count = int(agg['n'] or 0)
+        live_total = float(agg['total'] or 0)
+        if live_item_count <= 0:
+            return None
+        return {
+            'request_code': order_row['request_code'],
+            'item_count': live_item_count,
+            'total': live_total if live_total > 0 else float(order_row['confirmed_total'] or 0),
+            'date': order_row['created_at'] or '',
+        }
+    finally:
+        conn.close()
+
+
+def fetch_homepage_top_sellers(limit: int = 6) -> list[dict]:
+    """Pull this-week's top sellers for the homepage grid. Uses the same
+    txn_count_24m signal that powers the "Top Sellers" sort on department
+    pages, then drops anything that's hidden from homepage tiles or already
+    out of stock — honest stock signals only."""
+    tile_clause, tile_params = homepage_tile_filter()
+    conn = get_conn()
+    try:
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM products
+            WHERE active = 1
+              AND COALESCE(stock_status, 'in_stock') != 'out_of_stock'
+              AND {tile_clause}
+            ORDER BY COALESCE(txn_count_24m, 0) DESC,
+                     CASE WHEN COALESCE(priority, '') = 'TOP' THEN 0 ELSE 1 END,
+                     name COLLATE NOCASE
+            LIMIT ?
+            """,
+            [*tile_params, limit],
+        ).fetchall()
+        return [build_product_dict(row) for row in rows]
+    finally:
+        conn.close()
+
+
+def fetch_homepage_friendly_departments() -> list[dict]:
+    """Map the 16 friendly shopper-language buckets to existing department
+    slugs that actually have products. Buckets whose target department has
+    zero products are dropped silently (rare — most have thousands)."""
+    available = {dept['slug'] for dept in fetch_departments() if dept.get('product_count', 0) > 0}
+    return [bucket for bucket in FRIENDLY_DEPARTMENT_BUCKETS if bucket['department_slug'] in available]
+
+
 def normalize_ph_phone(raw: str) -> str:
     digits = ''.join(ch for ch in (raw or '') if ch.isdigit())
     if not digits:
@@ -776,6 +1613,33 @@ def build_admin_contact_links(order_request: dict, customer_update_message: str)
         ),
     }
     return links
+
+
+def build_store_contact_links(order_request: dict | None = None) -> dict:
+    """Customer-facing 'Message ANSON' links — same key shape as
+    build_admin_contact_links, but pointing at the store's contact handles
+    instead of the customer's own number. Mirrors the admin variant so the
+    template doesn't have to branch on which one it received."""
+    request_code = (order_request or {}).get('request_code') or ''
+    subject = f"{request_code} — order question" if request_code else f"{STORE_CONTACT_NAME} — order question"
+    body = f"Hi {STORE_CONTACT_NAME}, I have a question about my order {request_code}.".strip()
+    phone_intl = normalize_ph_phone(STORE_CONTACT_PHONE)
+    phone_digits = phone_intl.lstrip('+') if phone_intl else ''
+    return {
+        'phone_display':    STORE_CONTACT_PHONE,
+        'phone_intl':       phone_intl,
+        'email':            STORE_CONTACT_EMAIL,
+        'mailto':           (f"mailto:{STORE_CONTACT_EMAIL}?subject={quote(subject)}&body={quote(body)}"
+                             if STORE_CONTACT_EMAIL else ''),
+        'gmail_compose':    ('https://mail.google.com/mail/?'
+                             + urlencode({'view': 'cm', 'fs': '1', 'to': STORE_CONTACT_EMAIL, 'su': subject, 'body': body})
+                             if STORE_CONTACT_EMAIL else ''),
+        'viber_chat':       (f"viber://chat?number={quote(phone_intl)}" if phone_intl else ''),
+        'viber_call':       (f"viber://contact?number={quote(phone_intl)}" if phone_intl else ''),
+        'whatsapp':         (f"https://wa.me/{phone_digits}?text={quote(body)}" if phone_digits else ''),
+        'messenger':        STORE_MESSENGER_URL,
+        'store_name':       STORE_CONTACT_NAME,
+    }
 
 
 def get_editing_cart_url() -> str:
@@ -974,6 +1838,16 @@ def build_product_dict(row: sqlite3.Row) -> dict:
     if selling_options and not any(opt.get('is_default') for opt in selling_options):
         selling_options[0]['is_default'] = True
     default_option = next((opt for opt in selling_options if opt.get('is_default')), selling_options[0] if selling_options else None)
+    # "Sell only as this size" — when set, the storefront hides every option
+    # except the default one, so the item is offered exclusively at that size
+    # (e.g. an inner box that isn't sold per piece). Storefront-only: the POS /
+    # other barcodes are unaffected. Falls back gracefully if the chosen option
+    # isn't available (e.g. pack price missing) by keeping whatever default we
+    # resolved above.
+    exclusive_selling_option = bool(row['exclusive_selling_option']) if 'exclusive_selling_option' in row.keys() else False
+    if exclusive_selling_option and default_option is not None:
+        selling_options = [default_option]
+        default_option['is_default'] = True
     pack_option = selling_options[1] if len(selling_options) > 1 else None
     return {
         'merkey': row['merkey'],
@@ -989,9 +1863,16 @@ def build_product_dict(row: sqlite3.Row) -> dict:
         'class_l3_name': row['class_l3_name'] or '',
         'card_price': (default_option.get('price') if default_option else card_price) or 0.0,
         'price_retail': row['price_retail'],
-        'price_subtext': build_price_subtext(row, card_price) if not default_option or default_option.get('key') == 'retail' else f"P{float(row['price_retail'] or 0):,.2f} piece price",
+        'price_subtext': (
+            build_price_subtext(row, card_price)
+            if not default_option or default_option.get('key') == 'retail'
+            # Exclusive items hide the per-piece price entirely; otherwise show
+            # it as context beneath the default (pack/case) price.
+            else ('' if exclusive_selling_option else f"P{float(row['price_retail'] or 0):,.2f} piece price")
+        ),
         'show_pack_on_storefront': show_pack_price,
         'pack_option': pack_option,
+        'exclusive_selling_option': exclusive_selling_option,
         'default_selling_option': default_option.get('key') if default_option else 'retail',
         'default_selling_option_label': default_option.get('label') if default_option else 'Piece',
         'selling_options': selling_options,
@@ -1159,7 +2040,11 @@ def fetch_products(
     *,
     department_slug: str | None = None,
     category_slug: str | None = None,
+    category_list: list[str] | None = None,
     brand_name: str | None = None,
+    brand_list: list[str] | None = None,
+    promo_only: bool = False,
+    hide_out_of_stock: bool = False,
     search_query: str = '',
     page: int = 1,
     per_page: int = PRODUCT_GRID_PAGE_SIZE,
@@ -1178,9 +2063,39 @@ def fetch_products(
     if category_slug:
         clauses.append('category_slug = ?')
         params.append(category_slug)
+    if category_list:
+        # Multi-aisle filter (friendly Browse-Categories buckets that span
+        # several real categories). Sanitize and bail on empty to avoid IN ().
+        cleaned_categories = [c.strip() for c in category_list if c and c.strip()]
+        if cleaned_categories:
+            placeholders = ','.join('?' for _ in cleaned_categories)
+            clauses.append(f'category_slug IN ({placeholders})')
+            params.extend(cleaned_categories)
     if brand_name:
         clauses.append('brand = ?')
         params.append(brand_name)
+    if brand_list:
+        # Multi-select brand filter from the category page filter sheet.
+        # Sanitize: keep non-empty unique strings; bail if nothing's left so
+        # we don't emit `IN ()` (which SQLite rejects).
+        cleaned_brands = [b.strip() for b in brand_list if b and b.strip()]
+        if cleaned_brands:
+            placeholders = ','.join('?' for _ in cleaned_brands)
+            clauses.append(f'brand IN ({placeholders})')
+            params.extend(cleaned_brands)
+    if promo_only:
+        # "Promo only" filter — items priced below their retail (display_price
+        # markdown) OR explicitly flagged TOP. Matches what would visibly look
+        # like a promo to a shopper. Mirrors build_badges() logic.
+        clauses.append(
+            "(COALESCE(priority, '') = 'TOP' OR "
+            "(display_price IS NOT NULL AND price_retail IS NOT NULL "
+            "AND display_price < price_retail))"
+        )
+    if hide_out_of_stock:
+        # Out-of-stock items hidden from the category grid by default (honest
+        # stock signal — they're not orderable, so don't show them at all).
+        clauses.append("COALESCE(stock_status, 'in_stock') != 'out_of_stock'")
     if search_query:
         # Tokenize so "chicken nuggets" matches "Chicken Breast Nuggets" (each
         # token must appear in search_text, but not necessarily adjacent).
@@ -1214,6 +2129,115 @@ def fetch_products(
             [*params, per_page, offset],
         ).fetchall()
         return [build_product_dict(row) for row in rows], pager, resolved_sort_key, resolved_price_band
+    finally:
+        conn.close()
+
+
+def search_products(
+    search_query: str,
+    department_slug: str | None = None,
+    price_band: str = '',
+    sort_key: str = 'relevance',
+    page: int = 1,
+    per_page: int = PRODUCT_GRID_PAGE_SIZE,
+) -> dict:
+    """Intelligent product search.
+
+    Runs the FTS cascade (search_engine.run_search) to get a relevance-ranked
+    set of merkeys, then applies department/price filters and pagination in
+    SQL. Default sort is relevance (FTS rank); an explicit sort_key overrides
+    it. Returns a dict with products, pager, the resolved sort/price keys, and
+    search metadata (mode, did_you_mean, suggestions).
+    """
+    resolved_sort_key, sort_clause = resolve_sort(sort_key)
+    resolved_price_band, min_price, max_price = resolve_price_band(price_band)
+
+    conn = get_conn()
+    try:
+        # Keep the index in sync with republished catalogs without a restart.
+        search_engine.ensure_search_index(conn)
+        outcome = search_engine.run_search(conn, search_query, synonyms=SEARCH_SYNONYMS)
+        merkeys = outcome.merkeys
+
+        empty_result = {
+            'products': [],
+            'pager': make_pager(1, 0, per_page),
+            'sort_key': resolved_sort_key,
+            'price_band': resolved_price_band,
+            'mode': outcome.mode,
+            'did_you_mean': outcome.did_you_mean,
+            'suggestions': outcome.suggestions,
+        }
+        if not merkeys:
+            return empty_result
+
+        # Preserve FTS rank order via an ordinal map, then filter in SQL.
+        rank = {mk: i for i, mk in enumerate(merkeys)}
+        placeholders = ','.join('?' for _ in merkeys)
+        clauses = [f'merkey IN ({placeholders})', 'active = 1']
+        params: list[object] = list(merkeys)
+        if department_slug:
+            clauses.append('department_slug = ?')
+            params.append(department_slug)
+        if min_price is not None:
+            clauses.append(f'{DISPLAY_PRICE_SQL} >= ?')
+            params.append(min_price)
+        if max_price is not None:
+            clauses.append(f'{DISPLAY_PRICE_SQL} < ?')
+            params.append(max_price)
+        where_sql = ' AND '.join(clauses)
+
+        total_row = conn.execute(
+            f'SELECT COUNT(*) AS c FROM products WHERE {where_sql}', params
+        ).fetchone()
+        total_count = total_row['c'] if total_row else 0
+        pager = make_pager(page, total_count, per_page)
+
+        # Items the shopper can't actually order — out of stock OR "browse only"
+        # (sellable_state not orderable) — still appear in search (so a searched
+        # item is findable) but are de-prioritized below everything orderable,
+        # within either ordering mode. "Orderable" mirrors can_request_order in
+        # build_product_dict: sellable_state in (orderable, review_required) AND
+        # not out_of_stock.
+        unorderable_rank_sql = (
+            "CASE WHEN COALESCE(sellable_state, 'browse_only') IN ('orderable', 'review_required') "
+            "AND COALESCE(stock_status, 'in_stock') <> 'out_of_stock' THEN 0 ELSE 1 END"
+        )
+
+        def _unorderable(r):
+            orderable = (
+                (r['sellable_state'] or 'browse_only') in ('orderable', 'review_required')
+                and (r['stock_status'] or 'in_stock') != 'out_of_stock'
+            )
+            return 0 if orderable else 1
+
+        # Relevance = FTS order (default). Any explicit sort uses the SQL clause.
+        if resolved_sort_key == 'relevance':
+            rows = conn.execute(
+                f'SELECT * FROM products WHERE {where_sql}', params
+            ).fetchall()
+            rows = sorted(
+                rows,
+                key=lambda r: (_unorderable(r), rank.get(r['merkey'], 1_000_000)),
+            )
+            offset = (pager['page'] - 1) * per_page
+            rows = rows[offset:offset + per_page]
+        else:
+            offset = (pager['page'] - 1) * per_page
+            rows = conn.execute(
+                f'SELECT * FROM products WHERE {where_sql} ORDER BY {unorderable_rank_sql}, {sort_clause} LIMIT ? OFFSET ?',
+                [*params, per_page, offset],
+            ).fetchall()
+
+        return {
+            'products': [build_product_dict(row) for row in rows],
+            'pager': pager,
+            'sort_key': resolved_sort_key,
+            'price_band': resolved_price_band,
+            'mode': outcome.mode,
+            'did_you_mean': outcome.did_you_mean,
+            'suggestions': outcome.suggestions,
+        }
     finally:
         conn.close()
 
@@ -1312,7 +2336,12 @@ def create_order_request(
     fulfillment_notes: str,
     cart_items: list[dict],
     customer_id: int | None = None,
-) -> str:
+    points_redeemed: int = 0,
+) -> tuple[str, int]:
+    """Insert a new order_request + items, returning (request_code, order_row_id).
+    Phase C: when points_redeemed > 0, stores the debit amount on the row so
+    cancellation can roll it back and the status template can display the
+    discounted total."""
     request_code = f"OR-{datetime.now():%Y%m%d-%H%M%S-%f}"
     conn = get_conn()
     try:
@@ -1321,8 +2350,9 @@ def create_order_request(
                 """
                 INSERT INTO order_requests (
                     request_code, customer_name, contact_number, contact_email, fulfillment_method,
-                    preferred_schedule, location_details, fulfillment_notes, item_count, customer_id
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    preferred_schedule, location_details, fulfillment_notes, item_count, customer_id,
+                    points_redeemed
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     request_code,
@@ -1335,6 +2365,7 @@ def create_order_request(
                     fulfillment_notes or None,
                     sum(item['requested_qty'] for item in cart_items),
                     customer_id,
+                    max(0, int(points_redeemed or 0)),
                 ),
             )
             order_request_id = cur.lastrowid
@@ -1370,13 +2401,15 @@ def create_order_request(
                     for item in cart_items
                 ],
             )
-        return request_code
+        return request_code, order_request_id
     finally:
         conn.close()
 
 
 def notify_ops_webhook(*, request_code: str, customer_name: str, item_count: int,
-                       estimated_total: float, action: str = 'new', note: str = '') -> None:
+                       estimated_total: float, action: str = 'new', note: str = '',
+                       royal_card: str = '', pickup_slot_label: str = '',
+                       points_redeemed: int = 0) -> None:
     """Fire-and-forget notification to Slack/Discord/etc. via STOREFRONT_NOTIFICATIONS_WEBHOOK.
     No-op when webhook isn't configured. Errors are swallowed so order flow never breaks.
     `note` carries the customer's fulfillment notes (substitutions, item changes) so staff
@@ -1405,6 +2438,24 @@ def notify_ops_webhook(*, request_code: str, customer_name: str, item_count: int
             f"Customer: {name_clean}",
             f"Items: {item_count}  ·  Est. total: P{estimated_total:,.2f}",
         ]
+        # Royal Card linkage — printed before the note so staff sees it at a glance.
+        if royal_card and royal_card.isdigit() and len(royal_card) == 13:
+            lines.append(f":crown: Royal Card: `{royal_card}` — scan at till to award points")
+        # Phase C — surface the online points redemption so staff knows the
+        # discount has already been booked in bonus_ledger. The till total
+        # they collect should match `estimated_total` minus this amount.
+        if points_redeemed and int(points_redeemed) > 0:
+            pr = int(points_redeemed)
+            lines.append(
+                f":star2: Royal Card discount: P{pr} ({pr} pts) — already booked in ledger"
+            )
+        # Milestone 5: surface the picked pickup-slot label so staff can plan capacity
+        # straight from the chat. Defanged the same way as the customer note in case
+        # we ever surface an operator-edited slot note here.
+        if pickup_slot_label:
+            slot_clean = ' '.join(pickup_slot_label.split()).replace('@', '@​').replace('<', '<​')
+            if slot_clean:
+                lines.append(f":clock3: Pickup window: {slot_clean}")
         if note_clean:
             lines.append(f":memo: Customer note: {note_clean}")
         lines.append(f"Review: {admin_url}")
@@ -1449,7 +2500,7 @@ def notify_ops_webhook(*, request_code: str, customer_name: str, item_count: int
         app.logger.warning(f"Webhook notify failed: {exc}")
 
 
-STAFF_EDITABLE_STATUSES = {'NEW', 'REVIEWING', 'AWAITING_CUSTOMER_CONFIRMATION', 'CONFIRMED', 'FOR_RELEASE', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY'}
+STAFF_EDITABLE_STATUSES = {'NEW', 'REVIEWING', 'PICKING', 'AWAITING_CUSTOMER_CONFIRMATION', 'CONFIRMED', 'FOR_RELEASE', 'READY_FOR_PICKUP', 'OUT_FOR_DELIVERY'}
 
 
 def replace_order_request_items(
@@ -1471,7 +2522,7 @@ def replace_order_request_items(
     conn = get_conn()
     try:
         order = conn.execute(
-            "SELECT id, status FROM order_requests WHERE request_code = ?",
+            "SELECT id, status, points_redeemed FROM order_requests WHERE request_code = ?",
             (request_code,),
         ).fetchone()
         if not order:
@@ -1483,6 +2534,19 @@ def replace_order_request_items(
         else:
             if status != 'NEW':
                 return False
+        # Phase C — if the order has a points_redeemed value, make sure the
+        # new subtotal can still cover it. We auto-cap on edit so the order
+        # never becomes "negative" — the customer keeps as much of the
+        # redemption as the new subtotal allows. Settlement only debits the
+        # capped amount (the negative ledger row stays as-is; this is a
+        # storefront-only display correction, not a balance adjustment).
+        new_subtotal = sum(
+            (item.get('requested_qty') or 0) * (item.get('unit_price') or 0.0)
+            for item in cart_items
+        )
+        capped_redemption = max(0, int(order['points_redeemed'] or 0))
+        if capped_redemption > 0 and new_subtotal < capped_redemption:
+            capped_redemption = int(new_subtotal)
         with conn:
             conn.execute("DELETE FROM order_request_items WHERE order_request_id = ?", (order['id'],))
             conn.execute(
@@ -1490,7 +2554,8 @@ def replace_order_request_items(
                 UPDATE order_requests
                 SET customer_name = ?, contact_number = ?, contact_email = ?,
                     fulfillment_method = ?, preferred_schedule = ?, location_details = ?,
-                    fulfillment_notes = ?, item_count = ?, updated_at = CURRENT_TIMESTAMP
+                    fulfillment_notes = ?, item_count = ?, points_redeemed = ?,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
                 """,
                 (
@@ -1502,6 +2567,7 @@ def replace_order_request_items(
                     location_details or None,
                     fulfillment_notes or None,
                     sum(item['requested_qty'] for item in cart_items),
+                    capped_redemption,
                     order['id'],
                 ),
             )
@@ -1629,6 +2695,7 @@ def fetch_order_request(request_code: str) -> dict | None:
                    item_count, confirmed_at, confirmed_total, customer_confirmation_note,
                    payment_status, payment_method, payment_reference, payment_proof_path, payment_amount,
                    payment_submitted_at, payment_verified_at, payment_verified_by, payment_verification_note,
+                   COALESCE(points_redeemed, 0) AS points_redeemed,
                    created_at, updated_at
             FROM order_requests
             WHERE request_code = ?
@@ -1643,7 +2710,9 @@ def fetch_order_request(request_code: str) -> dict | None:
                    pricing_basis, quoted_price, original_quoted_price, sellable_state, fulfillment_type,
                    fulfillment_note, removed, removal_reason, created_at,
                    COALESCE(NULLIF(selling_option_key, ''), 'retail') AS selling_option_key,
-                   selling_option_label, selling_option_barcode
+                   selling_option_label, selling_option_barcode,
+                   COALESCE(NULLIF(pick_status, ''), 'PENDING') AS pick_status,
+                   picked_at, picked_by
             FROM order_request_items
             WHERE order_request_id = ?
             ORDER BY id
@@ -1658,6 +2727,8 @@ def fetch_order_request(request_code: str) -> dict | None:
             options = product.get('selling_options') or []
             item['customer_product_label'] = build_customer_product_label(product, item.get('product_name') or '')
             item['available_options'] = options
+            # Aisle hint for the picker — derived from the product's category.
+            item['category_name'] = product.get('category_name') or ''
             chosen = next((opt for opt in options if opt.get('key') == item.get('selling_option_key')), None)
             item['display_photo_url'] = (
                 (chosen or {}).get('photo_url')
@@ -1766,6 +2837,13 @@ def update_order_request(request_code: str, status: str, internal_note: str) -> 
         return False
     conn = get_conn()
     try:
+        # Phase C — if admin is flipping the order to CANCELLED, capture the
+        # row id + redemption so we can cancel the linked bonus_ledger entry
+        # in the same flow.
+        existing = conn.execute(
+            "SELECT id, points_redeemed FROM order_requests WHERE request_code = ?",
+            (request_code,),
+        ).fetchone()
         with conn:
             cur = conn.execute(
                 """
@@ -1775,6 +2853,11 @@ def update_order_request(request_code: str, status: str, internal_note: str) -> 
                 """,
                 (status, internal_note or None, request_code),
             )
+        try:
+            if (status or '').upper() == 'CANCELLED' and existing and (existing['points_redeemed'] or 0) > 0:
+                cancel_redemption_for_order(existing['id'], request_code)
+        except Exception:
+            pass
         return cur.rowcount > 0
     finally:
         conn.close()
@@ -1785,7 +2868,7 @@ def cancel_order_request_by_customer(request_code: str) -> bool:
     try:
         order_row = conn.execute(
             """
-            SELECT status, internal_note, confirmed_at
+            SELECT id, status, internal_note, confirmed_at, points_redeemed
             FROM order_requests
             WHERE request_code = ?
             """,
@@ -1812,6 +2895,15 @@ def cancel_order_request_by_customer(request_code: str) -> bool:
                 """,
                 (next_note, request_code),
             )
+        # Phase C — flip the linked negative bonus_ledger row to 'cancelled'
+        # so settle_bonuses.py skips it and the customer's balance isn't
+        # actually debited at EOD. No-op when points_redeemed == 0.
+        try:
+            if (order_dict.get('points_redeemed') or 0) > 0:
+                cancel_redemption_for_order(order_dict['id'], request_code)
+        except Exception:
+            # Cancellation should never fail loudly on a Supabase hiccup.
+            pass
         return cur.rowcount > 0
     finally:
         conn.close()
@@ -1951,7 +3043,10 @@ def update_order_request_items(request_code: str, status: str, internal_note: st
 
     conn = get_conn()
     try:
-        order_row = conn.execute("SELECT id, payment_status FROM order_requests WHERE request_code = ?", (request_code,)).fetchone()
+        order_row = conn.execute(
+            "SELECT id, payment_status, points_redeemed FROM order_requests WHERE request_code = ?",
+            (request_code,),
+        ).fetchone()
         if not order_row:
             return False
 
@@ -2050,6 +3145,15 @@ def update_order_request_items(request_code: str, status: str, internal_note: st
                 """,
                 (status, internal_note or None, active_count, order_row['id']),
             )
+        # Phase C — if this admin update CANCELLED an order that had an
+        # online redemption, flip the linked bonus_ledger row so the points
+        # debit doesn't settle at EOD. Outside the `with conn:` so a Supabase
+        # hiccup never rolls back the SQLite write.
+        try:
+            if (status or '').upper() == 'CANCELLED' and (order_row['points_redeemed'] or 0) > 0:
+                cancel_redemption_for_order(order_row['id'], request_code)
+        except Exception:
+            pass
         return True
     finally:
         conn.close()
@@ -2231,6 +3335,16 @@ def update_staff_payment(request_code: str, form_data, files, action: str, admin
 @app.context_processor
 def inject_global_template_values() -> dict:
     departments_by_count = fetch_departments(order_by_count=True)
+    # Phase C — resolve the signed-in customer's linked card once per request
+    # so templates can render the chip / pending dot without each one calling
+    # linked_royal_card(session.get(...)). Empty string for guests + unlinked.
+    current_card_no = ''
+    cid = session.get(CUSTOMER_SESSION_KEY)
+    if cid:
+        try:
+            current_card_no = linked_royal_card(cid) or ''
+        except Exception:
+            current_card_no = ''
     return {
         'top_departments': build_curated_top_departments(departments_by_count),
         'top_spotlights': BRAND_SPOTLIGHTS,
@@ -2240,8 +3354,17 @@ def inject_global_template_values() -> dict:
         'storefront_admin_authenticated': bool(session.get(ADMIN_SESSION_KEY)),
         'customer_logged_in': bool(session.get(CUSTOMER_SESSION_KEY)),
         'customer_display_name': session.get(CUSTOMER_NAME_SESSION_KEY, ''),
+        'current_customer_card_no':   current_card_no,
         'payment_status_label': payment_status_label,
         'payment_method_label': payment_method_label,
+        'linked_royal_card': linked_royal_card,
+        'build_admin_contact_links': build_admin_contact_links,
+        'build_store_contact_links': build_store_contact_links,
+        # Phase C — surface balance / pending bonuses so templates can call
+        # them directly without a per-route plumb-through. Both are no-ops
+        # for guests (card_no = ''), and fail-open to None / [] otherwise.
+        'royal_card_balance':         fetch_member_balance,
+        'royal_card_pending_bonuses': fetch_member_pending_bonuses,
     }
 
 
@@ -2269,6 +3392,9 @@ def payment_proof_file(filename: str):
 def home():
     breadcrumbs = [{'label': 'Home', 'url': None}]
     departments = fetch_departments()
+    customer_id = session.get(CUSTOMER_SESSION_KEY)
+    last_fulfilled_order = fetch_customer_last_fulfilled_order(customer_id) if customer_id else None
+    first_name = customer_first_name_from(session.get(CUSTOMER_NAME_SESSION_KEY, ''))
     return render_template(
         'home.html',
         breadcrumbs=breadcrumbs,
@@ -2276,7 +3402,26 @@ def home():
         category_highlights=fetch_category_highlights(limit=10),
         featured_collection=fetch_rotating_featured_collection(limit=8),
         spotlight_sections=fetch_department_spotlights(limit_per_department=6),
+        # Milestone 3 — Royal Card homepage redesign
+        last_fulfilled_order=last_fulfilled_order,
+        homepage_top_sellers=fetch_homepage_top_sellers(limit=6),
+        friendly_departments=fetch_homepage_friendly_departments(),
+        quick_baskets=QUICK_BASKETS,
+        customer_first_name=first_name,
     )
+
+
+@app.route('/quick-basket/<slug>')
+def quick_basket_placeholder(slug: str):
+    """Placeholder route for the experimental Quick Baskets strip on the
+    homepage. We're shipping these as an A/B-removable experiment: measure
+    tap rate, then decide whether to invest in real basket-fill logic.
+
+    See the homepage `<!-- experiment: Quick Baskets -->` marker."""
+    if slug not in QUICK_BASKET_SLUGS:
+        abort(404)
+    flash('Quick baskets are coming soon — we\'re tracking interest.', 'info')
+    return redirect(url_for('home'))
 
 
 @app.route('/department/<slug>')
@@ -2285,6 +3430,10 @@ def department_page(slug: str):
     active_category = (request.args.get('category') or '').strip()
     active_sort = request.args.get('sort', 'top')
     active_price_band = request.args.get('price_band', '')
+    # Milestone 4: comma-separated brand multi-select + promo-only toggle.
+    raw_brand_param = (request.args.get('brand') or '').strip()
+    active_brands = [b.strip() for b in raw_brand_param.split(',') if b.strip()]
+    promo_only = (request.args.get('promo') or '').strip().lower() in {'1', 'true', 'on', 'yes'}
 
     department = fetch_department_header(slug)
     if not department:
@@ -2295,9 +3444,18 @@ def department_page(slug: str):
     if active_category and active_category not in valid_category_slugs:
         active_category = ''
 
+    # Brand list driven by the current dept (+ optional sub-dept) so the
+    # filter sheet only shows brands the shopper can actually pick from.
+    available_brands = fetch_brands_for_view(slug, active_category or None)
+    available_brand_names = {brand['name'] for brand in available_brands}
+    active_brands = [b for b in active_brands if b in available_brand_names]
+
     products, pager, active_sort, active_price_band = fetch_products(
         department_slug=slug,
         category_slug=active_category or None,
+        brand_list=active_brands or None,
+        promo_only=promo_only,
+        hide_out_of_stock=True,
         page=page,
         per_page=PRODUCT_GRID_PAGE_SIZE,
         sort_key=active_sort,
@@ -2318,6 +3476,9 @@ def department_page(slug: str):
         active_category=active_category,
         active_sort=active_sort,
         active_price_band=active_price_band,
+        active_brands=active_brands,
+        available_brands=available_brands,
+        promo_only=promo_only,
         products=products,
         pager=pager,
         sort_options=SORT_OPTIONS,
@@ -2328,6 +3489,48 @@ def department_page(slug: str):
 @app.route('/department/<department_slug>/category/<category_slug>')
 def category_page(department_slug: str, category_slug: str):
     return redirect(url_for('department_page', slug=department_slug, category=category_slug))
+
+
+@app.route('/browse/<slug>')
+def browse_bucket(slug: str):
+    """Friendly Browse-Categories tile landing — shows exactly the aisles a
+    multi-category bucket covers (e.g. 'Canned & Processed' = all canned-*),
+    titled with the friendly name instead of dumping the shopper into the whole
+    broad department."""
+    bucket = FRIENDLY_BUCKETS_BY_SLUG.get(slug)
+    if not bucket:
+        abort(404)
+
+    page = max(request.args.get('page', 1, type=int), 1)
+    active_sort = request.args.get('sort', 'top')
+    active_price_band = request.args.get('price_band', '')
+
+    products, pager, active_sort, active_price_band = fetch_products(
+        department_slug=bucket['department_slug'],
+        category_list=bucket.get('category_slugs') or None,
+        hide_out_of_stock=True,
+        page=page,
+        per_page=PRODUCT_GRID_PAGE_SIZE,
+        sort_key=active_sort,
+        price_band=active_price_band,
+    )
+
+    breadcrumbs = [
+        {'label': 'Home', 'url': url_for('home')},
+        {'label': bucket['name'], 'url': None},
+    ]
+
+    return render_template(
+        'aisle.html',
+        breadcrumbs=breadcrumbs,
+        bucket=bucket,
+        products=products,
+        pager=pager,
+        active_sort=active_sort,
+        active_price_band=active_price_band,
+        sort_options=SORT_OPTIONS,
+        price_bands=PRICE_BANDS,
+    )
 
 
 @app.route('/brand/<slug>')
@@ -2449,6 +3652,30 @@ def update_cart():
         else:
             cart[line_key]['qty'] = qty
     save_cart(cart)
+    # Milestone 5: the redesigned cart's qty stepper hits this endpoint
+    # over AJAX. Return live totals so the page can update without a
+    # full reload. HTML callers keep the old redirect+flash behavior.
+    if wants_json_response():
+        items = build_cart_items()
+        subtotal = sum(item['line_price'] for item in items)
+        customer_id = session.get(CUSTOMER_SESSION_KEY)
+        earn_pts = _royal_card_earn_pts(subtotal) if linked_royal_card(customer_id) else 0
+        return jsonify({
+            'ok': True,
+            'cart_count': get_cart_count(),
+            'subtotal': subtotal,
+            'subtotal_formatted': f"P{subtotal:,.2f}",
+            'total_formatted': f"P{subtotal:,.2f}",
+            'earn_pts': earn_pts,
+            'line_totals': {
+                item['line_key']: {
+                    'qty': item['requested_qty'],
+                    'line_price': item['line_price'],
+                    'line_price_formatted': f"P{item['line_price']:,.2f}",
+                }
+                for item in items
+            },
+        })
     flash('Order request cart updated.', 'success')
     return redirect(request.form.get('next') or get_editing_cart_url())
 
@@ -2460,22 +3687,116 @@ def remove_from_cart(merkey: str):
     cart = get_cart()
     cart.pop(line_key, None)
     save_cart(cart)
+    if wants_json_response():
+        items = build_cart_items()
+        subtotal = sum(item['line_price'] for item in items)
+        customer_id = session.get(CUSTOMER_SESSION_KEY)
+        earn_pts = _royal_card_earn_pts(subtotal) if linked_royal_card(customer_id) else 0
+        return jsonify({
+            'ok': True,
+            'cart_count': get_cart_count(),
+            'subtotal': subtotal,
+            'subtotal_formatted': f"P{subtotal:,.2f}",
+            'total_formatted': f"P{subtotal:,.2f}",
+            'earn_pts': earn_pts,
+        })
     flash('Item removed from order request cart.', 'success')
     return redirect(request.form.get('next') or get_editing_cart_url())
 
 
+def _royal_card_earn_pts(subtotal: float) -> int:
+    """ANSON loyalty rule: 1 pt per P200 spent (floor). Surfaced on the
+    cart/checkout pages so the customer knows what they'll bank — only
+    rendered when they're logged in and Royal Card-linked."""
+    try:
+        s = float(subtotal or 0)
+    except (TypeError, ValueError):
+        return 0
+    if s <= 0:
+        return 0
+    return int(s // 200)
+
+
 @app.route('/cart', methods=['GET', 'POST'])
 def cart_page():
+    """Cart view (Milestone 5). GET renders the redesigned mobile-first
+    cart. POST is legacy — any old form that still targets /cart gets
+    handled by /checkout to keep the existing admin-edit-cart flow + any
+    bookmarked POSTers working. The first-class submit path is /checkout."""
+    if request.method == 'POST':
+        # Legacy fallback: a form was posted directly to /cart. Delegate to
+        # the new checkout handler so editing flows + any stale bookmarks
+        # keep working without duplicating 80 lines of logic.
+        return checkout_page()
     breadcrumbs = [
         {'label': 'Home', 'url': url_for('home')},
-        {'label': 'Order Request Cart', 'url': None},
+        {'label': 'Cart', 'url': None},
     ]
     cart_items = build_cart_items()
     estimated_total = sum(item['line_price'] for item in cart_items)
+    customer_id = session.get(CUSTOMER_SESSION_KEY)
+    royal_card = linked_royal_card(customer_id) if customer_id else ''
+    earn_pts = _royal_card_earn_pts(estimated_total) if royal_card else 0
+    return render_template(
+        'order_cart.html',
+        breadcrumbs=breadcrumbs,
+        cart_items=cart_items,
+        estimated_total=estimated_total,
+        royal_card_linked=bool(royal_card),
+        earn_pts=earn_pts,
+    )
+
+
+@app.route('/checkout', methods=['GET', 'POST'])
+def checkout_page():
+    """Focused checkout flow (Milestone 5). GET renders the fulfillment/slot/
+    payment/note form. POST submits the order — picks up the legacy POST-/cart
+    payload too, so the admin-edit-cart flow keeps working."""
+    breadcrumbs = [
+        {'label': 'Home', 'url': url_for('home')},
+        {'label': 'Cart', 'url': url_for('cart_page')},
+        {'label': 'Checkout', 'url': None},
+    ]
+    cart_items = build_cart_items()
+    estimated_total = sum(item['line_price'] for item in cart_items)
+    customer_id = session.get(CUSTOMER_SESSION_KEY)
+    royal_card = linked_royal_card(customer_id) if customer_id else ''
+    earn_pts = _royal_card_earn_pts(estimated_total) if royal_card else 0
+    # Phase C — fetch the live balance once so the redemption UI can render
+    # and the POST handler can re-fetch to detect concurrent redemptions.
+    # Falls back to None silently when Phase C is disabled / Supabase errors.
+    royal_card_balance = fetch_member_balance(royal_card) if royal_card else None
+
+    def render_checkout(form_data: dict, *, selected_slot_id: int | None = None,
+                        redeem_points_value: int = 0):
+        # Per-order cap is the min of: customer's balance, order subtotal, and
+        # the rollout cap. UI hides the section entirely when the cap is <= 0.
+        max_redeemable = 0
+        if royal_card and isinstance(royal_card_balance, int) and royal_card_balance > 0:
+            max_redeemable = min(
+                int(royal_card_balance),
+                int(estimated_total),
+                ROYALCARD_ONLINE_REDEMPTION_CAP,
+            )
+        return render_template(
+            'checkout.html',
+            breadcrumbs=breadcrumbs,
+            cart_items=cart_items,
+            estimated_total=estimated_total,
+            form_data=form_data,
+            royal_card_linked=bool(royal_card),
+            royal_card_number=royal_card,
+            royal_card_balance=royal_card_balance if royal_card else None,
+            royal_card_max_redeemable=max_redeemable,
+            royal_card_redeem_points=max(0, int(redeem_points_value or 0)),
+            earn_pts=earn_pts,
+            available_slots=fetch_available_slots(days_ahead=3),
+            selected_slot_id=selected_slot_id,
+        )
 
     if request.method == 'POST':
         if not cart_items:
-            flash('Your order request cart is empty.', 'error')
+            flash('Your cart is empty.', 'error')
             return redirect(url_for('cart_page'))
 
         customer_name = (request.form.get('customer_name') or '').strip()
@@ -2485,48 +3806,91 @@ def cart_page():
         preferred_schedule = (request.form.get('preferred_schedule') or '').strip()
         location_details = (request.form.get('location_details') or '').strip()
         fulfillment_notes = (request.form.get('fulfillment_notes') or '').strip()
+        # Phase C — points the customer wants to redeem. Only honored when
+        # they're linked AND Phase C is enabled; ignored entirely for guests.
+        redeem_points_raw = (request.form.get('redeem_points') or '').strip()
+        try:
+            redeem_points = max(0, int(float(redeem_points_raw))) if redeem_points_raw else 0
+        except (TypeError, ValueError):
+            redeem_points = 0
+        # Milestone 5: pickup slot picker — optional for now (delivery + legacy
+        # bookmarked forms don't have it). Parsed to int or None.
+        pickup_slot_id_raw = (request.form.get('pickup_slot_id') or '').strip()
+        try:
+            pickup_slot_id = int(pickup_slot_id_raw) if pickup_slot_id_raw else None
+        except ValueError:
+            pickup_slot_id = None
+        # When user picks a slot, write a human-readable label into the
+        # legacy preferred_schedule column so existing admin views stay
+        # readable without any template changes.
+        picked_slot = fetch_pickup_slot(pickup_slot_id) if pickup_slot_id else None
+        if picked_slot:
+            preferred_schedule = picked_slot['label_legacy']
+
+        form_data = empty_request_form_data()
+        form_data.update({
+            'customer_name': customer_name,
+            'contact_number': contact_number,
+            'contact_email': contact_email,
+            'fulfillment_method': fulfillment_method,
+            'preferred_schedule': preferred_schedule,
+            'location_details': location_details,
+            'fulfillment_notes': fulfillment_notes,
+        })
 
         if fulfillment_method not in {'pickup', 'delivery'}:
             flash('Please choose pickup or delivery for this request.', 'error')
-            form_data = empty_request_form_data()
-            form_data.update({
-                'customer_name': customer_name,
-                'contact_number': contact_number,
-                'contact_email': contact_email,
-                'fulfillment_method': fulfillment_method,
-                'preferred_schedule': preferred_schedule,
-                'location_details': location_details,
-                'fulfillment_notes': fulfillment_notes,
-            })
-            return render_template(
-                'order_cart.html',
-                breadcrumbs=breadcrumbs,
-                cart_items=cart_items,
-                estimated_total=estimated_total,
-                form_data=form_data,
-                request_submitted=False,
-            )
+            return render_checkout(form_data, selected_slot_id=pickup_slot_id,
+                                   redeem_points_value=redeem_points)
 
         if not customer_name or not contact_number or not location_details:
             flash('Please provide your name, contact number, and pickup or delivery details.', 'error')
-            form_data = empty_request_form_data()
-            form_data.update({
-                'customer_name': customer_name,
-                'contact_number': contact_number,
-                'contact_email': contact_email,
-                'fulfillment_method': fulfillment_method,
-                'preferred_schedule': preferred_schedule,
-                'location_details': location_details,
-                'fulfillment_notes': fulfillment_notes,
-            })
-            return render_template(
-                'order_cart.html',
-                breadcrumbs=breadcrumbs,
-                cart_items=cart_items,
-                estimated_total=estimated_total,
-                form_data=form_data,
-                request_submitted=False,
-            )
+            return render_checkout(form_data, selected_slot_id=pickup_slot_id,
+                                   redeem_points_value=redeem_points)
+
+        # Pickup requires a slot once a slot system is in place. Delivery is
+        # exempt (no slot picker shown for delivery anyway).
+        if fulfillment_method == 'pickup' and pickup_slot_id is None and fetch_available_slots(days_ahead=3):
+            flash('Please pick a pickup window.', 'error')
+            return render_checkout(form_data, selected_slot_id=None,
+                                   redeem_points_value=redeem_points)
+
+        # Phase C — re-validate the requested redemption at submit time. The
+        # balance the customer saw on the GET may have moved (e.g. they redeemed
+        # in-store between page load and submit). Re-fetch fresh, cap to the
+        # smaller of order total / rollout cap, and refuse if it now exceeds
+        # available — never silently over-redeem. Guests and non-Phase-C
+        # storefronts skip this block entirely.
+        effective_redemption = 0
+        if redeem_points > 0:
+            if not royal_card:
+                # Guest who somehow injected the field — silently drop, don't
+                # leak that the feature exists.
+                redeem_points = 0
+            else:
+                fresh_balance = fetch_member_balance(royal_card)
+                if fresh_balance is None:
+                    flash(
+                        "We couldn't verify your Royal Card balance right now — "
+                        "please try again or place the order without using points.",
+                        'error',
+                    )
+                    return render_checkout(form_data, selected_slot_id=pickup_slot_id,
+                                           redeem_points_value=redeem_points)
+                allowed = min(
+                    int(fresh_balance),
+                    int(estimated_total),
+                    ROYALCARD_ONLINE_REDEMPTION_CAP,
+                )
+                if redeem_points > allowed:
+                    flash(
+                        f"You requested {redeem_points} pts but only {allowed} can be "
+                        f"used on this order. Please adjust and try again.",
+                        'error',
+                    )
+                    return render_checkout(form_data, selected_slot_id=pickup_slot_id,
+                                           redeem_points_value=allowed)
+                effective_redemption = redeem_points
 
         editing_code = get_editing_request_code()
         if editing_code:
@@ -2549,6 +3913,13 @@ def cart_page():
                 return redirect(url_for('cart_page'))
             save_cart({})
             clear_editing_state()
+            # Try to attach the picked slot to the edited order. Silent
+            # failure (slot full) is acceptable on an edit — the order
+            # itself was saved.
+            if pickup_slot_id is not None:
+                editing_row_id = order_request_id_for_code(editing_code)
+                if editing_row_id:
+                    book_pickup_slot(editing_row_id, pickup_slot_id)
             notify_ops_webhook(
                 request_code=editing_code,
                 customer_name=customer_name,
@@ -2556,6 +3927,8 @@ def cart_page():
                 estimated_total=estimated_total,
                 action='updated',
                 note=fulfillment_notes,
+                royal_card=linked_royal_card(session.get(CUSTOMER_SESSION_KEY)),
+                pickup_slot_label=(picked_slot or {}).get('label_short', ''),
             )
             flash(f'Order request {editing_code} updated with your changes.', 'success')
             return redirect(url_for(
@@ -2563,7 +3936,7 @@ def cart_page():
                 request_code=editing_code,
             ))
 
-        request_code = create_order_request(
+        request_code, new_row_id = create_order_request(
             customer_name,
             contact_number,
             contact_email,
@@ -2573,7 +3946,53 @@ def cart_page():
             fulfillment_notes,
             cart_items,
             customer_id=session.get(CUSTOMER_SESSION_KEY),
+            points_redeemed=effective_redemption,
         )
+
+        # Phase C — book the negative bonus_ledger row for the redemption.
+        # We've already validated the amount against the live balance above;
+        # if the Supabase POST itself fails, roll the order back to zero
+        # points so we never charge the customer for a discount they didn't
+        # get. The order itself still stands — they can pay full price.
+        booked_redemption = 0
+        if effective_redemption > 0 and royal_card:
+            inserted = apply_redemption_to_ledger(
+                royal_card, effective_redemption, new_row_id, request_code,
+            )
+            if inserted:
+                booked_redemption = effective_redemption
+            else:
+                # Roll the column back so the discounted total isn't shown to
+                # the customer or to ops. Flash a friendly error.
+                conn_rb = get_conn()
+                try:
+                    with conn_rb:
+                        conn_rb.execute(
+                            "UPDATE order_requests SET points_redeemed = 0 WHERE id = ?",
+                            (new_row_id,),
+                        )
+                finally:
+                    conn_rb.close()
+                flash(
+                    "We couldn't apply your Royal Card discount — your order is "
+                    "still placed at full price. Please try redeeming in-store.",
+                    'error',
+                )
+
+        # Try to atomically attach the picked slot. If the slot just filled
+        # between the GET and the POST, flash a friendly error and re-render
+        # with a fresh slot list — but the order is *still* placed, so the
+        # customer doesn't lose their basket. Staff will pick a slot manually.
+        slot_booked = False
+        if pickup_slot_id is not None and new_row_id:
+            slot_booked = book_pickup_slot(new_row_id, pickup_slot_id)
+            if not slot_booked:
+                flash(
+                    'That pickup window just filled — your order is saved, but '
+                    'please message us to pick another slot.',
+                    'error',
+                )
+
         save_cart({})
         notify_ops_webhook(
             request_code=request_code,
@@ -2582,27 +4001,14 @@ def cart_page():
             estimated_total=estimated_total,
             action='new',
             note=fulfillment_notes,
+            royal_card=linked_royal_card(session.get(CUSTOMER_SESSION_KEY)),
+            pickup_slot_label=((picked_slot or {}).get('label_short', '') if slot_booked else ''),
+            points_redeemed=booked_redemption,
         )
         flash(f'Order request {request_code} submitted for internal review.', 'success')
-        return render_template(
-            'order_cart.html',
-            breadcrumbs=breadcrumbs,
-            cart_items=[],
-            estimated_total=0.0,
-            form_data=empty_request_form_data(),
-            request_submitted=True,
-            request_code=request_code,
-            request_status_url=url_for('order_request_page', request_code=request_code),
-        )
+        return redirect(url_for('order_request_page', request_code=request_code))
 
-    return render_template(
-        'order_cart.html',
-        breadcrumbs=breadcrumbs,
-        cart_items=cart_items,
-        estimated_total=estimated_total,
-        form_data=prefilled_request_form_data(),
-        request_submitted=False,
-    )
+    return render_checkout(prefilled_request_form_data())
 
 
 @app.route('/orders/lookup', methods=['GET', 'POST'])
@@ -2684,6 +4090,12 @@ def customer_register_page():
             if claimed:
                 msg += f' {claimed} previous order(s) linked to your account.'
             flash(msg, 'success')
+            # Phase B: if this phone is already a Royal Card member, stamp the
+            # card on the freshly-created customer row so online orders count
+            # toward their points balance from the very first purchase.
+            linked = _try_link_royal_card_to_customer(customer_id)
+            if linked:
+                flash("Your Royal Card was linked to your online account — you'll earn points on online orders.", 'success')
             return redirect(resolve_customer_redirect_target(next_target))
         except sqlite3.IntegrityError:
             flash('An account with that phone number or email already exists.', 'error')
@@ -2698,6 +4110,86 @@ def customer_register_page():
     return render_template('customer_register.html', breadcrumbs=breadcrumbs,
                            form_display_name='', form_phone='', form_email='',
                            next_target=next_target)
+
+
+@app.route('/auth/royalcard')
+def royalcard_link_page():
+    """Phase A Royal Card deeplink:
+        /auth/royalcard?card=<13>&phone=<+63...>&name=<...>&exp=<unix>&t=<hmac>
+    Token is signed by the Supabase Edge Function `shop-link` with the shared
+    ROYALCARD_LINK_SECRET. Find-or-create the customer by phone, stamp card_no,
+    log them into the storefront session, redirect home with a flash."""
+    if not ROYALCARD_LINK_SECRET:
+        abort(404)
+    card  = (request.args.get('card')  or '').strip()
+    phone = (request.args.get('phone') or '').strip()
+    name  = (request.args.get('name')  or '').strip()
+    try:
+        exp = int(request.args.get('exp') or '0')
+    except ValueError:
+        abort(400, 'bad token')
+    got = (request.args.get('t') or '').strip()
+    if not (card and phone and exp and got):
+        abort(400, 'missing fields')
+    # signature over canonical form (no URL-encoding in the signed string)
+    canonical = f"{card}|{phone}|{name}|{exp}".encode()
+    expected  = hmac.new(ROYALCARD_LINK_SECRET.encode(), canonical, hashlib.sha256).hexdigest()
+    if not hmac.compare_digest(expected, got):
+        abort(400, 'bad signature')
+    if exp < int(datetime.utcnow().timestamp()):
+        abort(400, 'token expired')
+    # 13-digit EAN-13 starting with the ANSON prefix
+    if not (card.isdigit() and len(card) == 13 and card.startswith('1010570')):
+        abort(400, 'bad card')
+
+    phone_intl = normalize_ph_phone(phone)
+    if not phone_intl:
+        abort(400, 'bad phone')
+    # FoxBase stores names as 'LAST, FIRST MIDDLE' — flip for display.
+    display = name
+    if ',' in name:
+        last, first = name.split(',', 1)
+        display = f"{first.strip()} {last.strip()}".strip()
+    display = display or 'Royal Card Member'
+
+    conn = get_conn()
+    try:
+        row = conn.execute(
+            "SELECT id, card_no, display_name FROM customers WHERE phone = ?",
+            (phone_intl,),
+        ).fetchone()
+        if row:
+            cust_id = row['id']
+            updates, params = [], []
+            if not row['card_no']:
+                updates.append("card_no = ?"); params.append(card)
+            if not (row['display_name'] or '').strip():
+                updates.append("display_name = ?"); params.append(display)
+            if updates:
+                updates.append("updated_at = CURRENT_TIMESTAMP")
+                params.append(cust_id)
+                conn.execute(f"UPDATE customers SET {', '.join(updates)} WHERE id = ?", params)
+        else:
+            # Auto-provision a passwordless customer (login is via the deeplink).
+            # The placeholder hash format makes the customer login route reject any
+            # password attempt while remaining a well-formed non-null value.
+            placeholder = '!royalcard-link-only!' + secrets.token_urlsafe(16)
+            cur = conn.execute(
+                "INSERT INTO customers (phone, display_name, password_hash, card_no) "
+                "VALUES (?, ?, ?, ?)",
+                (phone_intl, display, placeholder, card),
+            )
+            cust_id = cur.lastrowid
+            claim_guest_orders(conn, cust_id, phone_intl, None)
+        conn.commit()
+    finally:
+        conn.close()
+
+    session[CUSTOMER_SESSION_KEY] = cust_id
+    session[CUSTOMER_NAME_SESSION_KEY] = display
+    session.modified = True
+    flash(f"Welcome, {display.split()[0]}! Your Royal Card is linked.", 'success')
+    return redirect(url_for('home'))
 
 
 @app.route('/account/login', methods=['GET', 'POST'])
@@ -2720,6 +4212,13 @@ def customer_login_page():
             session[CUSTOMER_NAME_SESSION_KEY] = customer['display_name']
             session.modified = True
             flash(f"Welcome back, {customer['display_name']}.", 'success')
+            # Phase B: opportunistically link the Royal Card if this phone is on
+            # file in Supabase but the storefront row never got card_no stamped
+            # (e.g. this customer registered directly here, not via PWA deeplink).
+            if not (customer.get('card_no') or '').strip():
+                linked = _try_link_royal_card_to_customer(customer['id'])
+                if linked:
+                    flash("Your Royal Card was linked to your online account — you'll earn points on online orders.", 'success')
             return redirect(resolve_customer_redirect_target(next_target))
         flash('Login failed. Please check your phone/email and password.', 'error')
 
@@ -3126,6 +4625,239 @@ def admin_order_detail_page(request_code: str):
     )
 
 
+# ============================================================================
+# PICKER MVP — operator phone view for walking the aisles.
+# Mockup: RoyalCard/mockups/shop_picker.html
+# ============================================================================
+
+PICKER_BLOCKING_STATUSES = {'CANCELLED', 'RELEASED', 'COMPLETED'}
+
+
+def _picker_load_order_or_redirect(request_code: str):
+    """Fetch an order for the picker view. Returns (order_bundle, None) on
+    success, or (None, redirect_response) when the order is missing/finished."""
+    order_bundle = fetch_order_request(request_code)
+    if not order_bundle:
+        abort(404)
+    canonical = (order_bundle['request'].get('canonical_status') or '').upper()
+    raw_status = (order_bundle['request'].get('status') or '').upper()
+    if canonical in PICKER_BLOCKING_STATUSES or raw_status in PICKER_BLOCKING_STATUSES:
+        flash(f'Order {request_code} is {order_bundle["request"].get("status_label") or raw_status}; picker is closed.', 'error')
+        return None, redirect(url_for('admin_order_detail_page', request_code=request_code))
+    return order_bundle, None
+
+
+@app.route('/orders/admin/<request_code>/picker', methods=['GET'])
+@storefront_admin_required
+def admin_picker_page(request_code: str):
+    order_bundle, redirect_resp = _picker_load_order_or_redirect(request_code)
+    if redirect_resp is not None:
+        return redirect_resp
+    order = order_bundle['request']
+    items = order_bundle['items']
+    total_count = len(items)
+    resolved_count = sum(1 for it in items if (it.get('pick_status') or 'PENDING').upper() != 'PENDING')
+    breadcrumbs = [
+        {'label': 'Order Admin', 'url': url_for('admin_orders_page')},
+        {'label': request_code, 'url': url_for('admin_order_detail_page', request_code=request_code)},
+        {'label': 'Picker', 'url': None},
+    ]
+    return render_template(
+        'picker.html',
+        breadcrumbs=breadcrumbs,
+        order_request=order,
+        order_items=items,
+        total_count=total_count,
+        resolved_count=resolved_count,
+        royal_card=linked_royal_card(order.get('customer_id')),
+    )
+
+
+@app.route('/orders/admin/<request_code>/picker/start', methods=['POST'])
+@storefront_admin_required
+def admin_picker_start(request_code: str):
+    order_bundle, redirect_resp = _picker_load_order_or_redirect(request_code)
+    if redirect_resp is not None:
+        return redirect_resp
+    canonical = (order_bundle['request'].get('canonical_status') or '').upper()
+    if canonical not in {'NEW', 'REVIEWING'}:
+        flash(f'Cannot start picking from status {canonical or "?"}.', 'error')
+        return redirect(url_for('admin_order_detail_page', request_code=request_code))
+    conn = get_conn()
+    try:
+        conn.execute(
+            "UPDATE order_requests SET status = 'PICKING', updated_at = CURRENT_TIMESTAMP WHERE request_code = ?",
+            (request_code,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    flash(f'Started picking {request_code}.', 'success')
+    return redirect(url_for('admin_picker_page', request_code=request_code))
+
+
+@app.route('/orders/admin/<request_code>/picker/item/<int:item_id>', methods=['POST'])
+@storefront_admin_required
+def admin_picker_item_action(request_code: str, item_id: int):
+    action = (request.form.get('pick_action') or '').strip().lower()
+    if action not in {'pick', 'oos', 'skip', 'reset'}:
+        return jsonify({'ok': False, 'error': 'bad_action'}), 400
+
+    conn = get_conn()
+    try:
+        order_row = conn.execute(
+            "SELECT id, status FROM order_requests WHERE request_code = ?",
+            (request_code,),
+        ).fetchone()
+        if not order_row:
+            return jsonify({'ok': False, 'error': 'order_not_found'}), 404
+        raw_status = (order_row['status'] or '').upper()
+        if raw_status in PICKER_BLOCKING_STATUSES:
+            return jsonify({'ok': False, 'error': 'order_closed', 'status': raw_status}), 409
+        item_row = conn.execute(
+            "SELECT id FROM order_request_items WHERE id = ? AND order_request_id = ?",
+            (item_id, order_row['id']),
+        ).fetchone()
+        if not item_row:
+            return jsonify({'ok': False, 'error': 'item_not_found'}), 404
+
+        admin_username = session.get(ADMIN_USERNAME_SESSION_KEY) or 'admin'
+        if action == 'pick':
+            conn.execute(
+                """
+                UPDATE order_request_items
+                SET pick_status = 'PICKED',
+                    picked_at = CURRENT_TIMESTAMP,
+                    picked_by = ?,
+                    removed = 0,
+                    removal_reason = NULL
+                WHERE id = ?
+                """,
+                (admin_username, item_id),
+            )
+            new_status = 'PICKED'
+        elif action == 'oos':
+            conn.execute(
+                """
+                UPDATE order_request_items
+                SET pick_status = 'OUT_OF_STOCK',
+                    picked_at = CURRENT_TIMESTAMP,
+                    picked_by = ?,
+                    removed = 1,
+                    removal_reason = 'out_of_stock'
+                WHERE id = ?
+                """,
+                (admin_username, item_id),
+            )
+            new_status = 'OUT_OF_STOCK'
+        elif action == 'skip':
+            conn.execute(
+                """
+                UPDATE order_request_items
+                SET pick_status = 'SKIPPED',
+                    picked_at = CURRENT_TIMESTAMP,
+                    picked_by = ?,
+                    removed = 1,
+                    removal_reason = 'skipped_by_picker'
+                WHERE id = ?
+                """,
+                (admin_username, item_id),
+            )
+            new_status = 'SKIPPED'
+        else:  # reset
+            conn.execute(
+                """
+                UPDATE order_request_items
+                SET pick_status = 'PENDING',
+                    picked_at = NULL,
+                    picked_by = NULL,
+                    removed = 0,
+                    removal_reason = NULL
+                WHERE id = ?
+                """,
+                (item_id,),
+            )
+            new_status = 'PENDING'
+        conn.execute(
+            "UPDATE order_requests SET updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (order_row['id'],),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({'ok': True, 'pick_status': new_status})
+
+
+@app.route('/orders/admin/<request_code>/picker/finish', methods=['POST'])
+@storefront_admin_required
+def admin_picker_finish(request_code: str):
+    order_bundle, redirect_resp = _picker_load_order_or_redirect(request_code)
+    if redirect_resp is not None:
+        return redirect_resp
+    order = order_bundle['request']
+    canonical = (order.get('canonical_status') or '').upper()
+    if canonical != 'PICKING':
+        flash(f'Cannot finish picking — order is {canonical or "?"}.', 'error')
+        return redirect(url_for('admin_order_detail_page', request_code=request_code))
+
+    # Read every (active + removed) item, then check pick_status across them.
+    conn = get_conn()
+    try:
+        all_rows = conn.execute(
+            """
+            SELECT id, COALESCE(NULLIF(pick_status, ''), 'PENDING') AS pick_status,
+                   requested_qty, quoted_price, removed
+            FROM order_request_items
+            WHERE order_request_id = ?
+            """,
+            (order['id'],),
+        ).fetchall()
+        all_rows = [dict(r) for r in all_rows]
+        pending = [r for r in all_rows if (r['pick_status'] or 'PENDING').upper() == 'PENDING']
+        if pending:
+            flash(f'{len(pending)} item(s) still unresolved. Pick, mark out of stock, or skip every row before finishing.', 'error')
+            return redirect(url_for('admin_picker_page', request_code=request_code))
+
+        had_removals = any(
+            (r['pick_status'] or '').upper() in {'OUT_OF_STOCK', 'SKIPPED'} for r in all_rows
+        )
+        payment_status = (order.get('payment_status') or 'UNPAID').strip().upper()
+
+        if had_removals:
+            new_state = 'AWAITING_CUSTOMER_CONFIRMATION'
+        elif payment_status == 'PAID':
+            new_state = 'FOR_RELEASE'
+        else:
+            new_state = 'AWAITING_CUSTOMER_CONFIRMATION'
+
+        conn.execute(
+            "UPDATE order_requests SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (new_state, order['id']),
+        )
+        conn.commit()
+
+        # Re-fetch active items for an accurate count after removals.
+        active_rows = [r for r in all_rows if not r.get('removed')]
+        item_count = sum(int(r['requested_qty'] or 0) for r in active_rows)
+        estimated_total = sum(
+            float(r['quoted_price'] or 0) * int(r['requested_qty'] or 0) for r in active_rows
+        )
+    finally:
+        conn.close()
+
+    notify_ops_webhook(
+        request_code=request_code,
+        customer_name=order.get('customer_name') or '',
+        item_count=item_count,
+        estimated_total=estimated_total,
+        action='updated',
+        note=order.get('fulfillment_notes') or '',
+        royal_card=linked_royal_card(order.get('customer_id')),
+    )
+    flash(f'Picking complete for {request_code}. Order moved to {order_status_label(new_state)}.', 'success')
+    return redirect(url_for('admin_order_detail_page', request_code=request_code))
+
+
 @app.route('/orders/<request_code>')
 def order_request_page(request_code: str):
     order_bundle = fetch_order_request(request_code)
@@ -3333,6 +5065,18 @@ def manage_order_request_page(request_code: str):
             flash(f'Order request {request_code} was deleted.', 'success')
             return redirect(url_for('order_lookup_page'))
         flash('This request can no longer be deleted online. Please cancel it instead or contact the store.', 'error')
+    elif action == 'customer_confirm':
+        # Customer approving the picker's removed/out-of-stock items.
+        # Stamps customer_confirmation_note so the staff knows to proceed.
+        canonical = (order_bundle['request'].get('canonical_status') or '').upper()
+        if canonical != 'AWAITING_CUSTOMER_CONFIRMATION':
+            flash('This order is not waiting on your approval right now.', 'error')
+        else:
+            note = (request.form.get('customer_confirmation_note') or 'Customer approved removed items.').strip()
+            if confirm_order_request(request_code, note):
+                flash('Thanks — we approved the changes and will continue your order.', 'success')
+            else:
+                flash('Could not record your approval. Please try again or message us.', 'error')
     else:
         flash('Unknown order action.', 'error')
 
@@ -3344,7 +5088,10 @@ def search():
     q = (request.args.get('q') or '').strip()
     page = max(request.args.get('page', 1, type=int), 1)
     active_department = (request.args.get('department') or '').strip()
-    active_sort = request.args.get('sort', 'top')
+    # Searches rank by relevance ("Best Match") by default; browsing-only views
+    # (filters with no query) keep the Top Sellers default.
+    default_sort = 'relevance' if q else 'top'
+    active_sort = request.args.get('sort') or default_sort
     active_price_band = request.args.get('price_band', '')
 
     department_options = fetch_departments()
@@ -3352,15 +5099,37 @@ def search():
     if active_department and active_department not in valid_department_slugs:
         active_department = ''
 
-    has_filters = bool(active_department or active_price_band or active_sort != 'top')
+    has_filters = bool(active_department or active_price_band or active_sort not in ('top', 'relevance'))
 
-    if q or has_filters:
-        products, pager, active_sort, active_price_band = fetch_products(
-            department_slug=active_department or None,
+    did_you_mean = ''
+    suggestions: list[dict] = []
+    search_mode = ''
+
+    if q:
+        result = search_products(
             search_query=q,
+            department_slug=active_department or None,
+            price_band=active_price_band,
+            sort_key=active_sort,
             page=page,
             per_page=PRODUCT_GRID_PAGE_SIZE,
-            sort_key=active_sort,
+        )
+        products = result['products']
+        pager = result['pager']
+        active_sort = result['sort_key']
+        active_price_band = result['price_band']
+        did_you_mean = result['did_you_mean']
+        suggestions = result['suggestions']
+        search_mode = result['mode']
+    elif has_filters:
+        # No query, just department/price browsing — relevance has nothing to
+        # rank against, so use the standard filtered browse.
+        browse_sort = active_sort if active_sort != 'relevance' else 'top'
+        products, pager, active_sort, active_price_band = fetch_products(
+            department_slug=active_department or None,
+            page=page,
+            per_page=PRODUCT_GRID_PAGE_SIZE,
+            sort_key=browse_sort,
             price_band=active_price_band,
         )
     else:
@@ -3386,6 +5155,9 @@ def search():
         active_price_band=active_price_band,
         sort_options=SORT_OPTIONS,
         price_bands=PRICE_BANDS,
+        did_you_mean=did_you_mean,
+        suggestions=suggestions,
+        search_mode=search_mode,
     )
 
 

@@ -101,6 +101,30 @@ def slugify(value: str | None) -> str:
     return text.strip('-') or 'item'
 
 
+# Product names imported from the POS carry characters from its DOS code page
+# (CP437) that were mis-decoded as Latin-1, leaving mojibake in the catalog —
+# e.g. "Nestl<0x90> A-P Crm" instead of "Nestlé", "Ni¥O" instead of "NIÑO",
+# "8«X11" instead of "8½X11". These specific codepoints are unambiguous
+# artifacts in this catalog; correctly-encoded names (e.g. "Jalapeño", which
+# uses a real U+00F1) are left untouched. Applied at publish so it self-heals
+# on every run without rewriting the curated source data.
+_MOJIBAKE_FIXES = {
+    '\x90': 'é',   # CP437 0x90 É — only ever appears in "Nestlé" items here
+    '\xa5': 'Ñ',   # ¥  -> Ñ  (NIÑO)
+    '\xab': '½',   # «  -> ½  (paper/bulb sizes)
+    '\xac': '¼',   # ¬  -> ¼
+}
+
+
+def fix_mojibake(value):
+    if not value:
+        return value
+    for bad, good in _MOJIBAKE_FIXES.items():
+        if bad in value:
+            value = value.replace(bad, good)
+    return value
+
+
 def connect(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
@@ -132,6 +156,7 @@ def ensure_schema(target_conn: sqlite3.Connection) -> None:
         'pack_quantity': 'ALTER TABLE products ADD COLUMN pack_quantity INTEGER',
         'show_pack_on_storefront': 'ALTER TABLE products ADD COLUMN show_pack_on_storefront INTEGER NOT NULL DEFAULT 0',
         'default_selling_option': "ALTER TABLE products ADD COLUMN default_selling_option TEXT NOT NULL DEFAULT 'retail'",
+        'exclusive_selling_option': 'ALTER TABLE products ADD COLUMN exclusive_selling_option INTEGER NOT NULL DEFAULT 0',
         'pack_display_label': 'ALTER TABLE products ADD COLUMN pack_display_label TEXT',
         'pack_photo_url': 'ALTER TABLE products ADD COLUMN pack_photo_url TEXT',
         'pack_barcode': 'ALTER TABLE products ADD COLUMN pack_barcode TEXT',
@@ -159,6 +184,8 @@ def ensure_source_schema(source_conn: sqlite3.Connection) -> None:
         source_conn.execute("ALTER TABLE products ADD COLUMN show_pack_on_storefront INTEGER DEFAULT 0")
     if 'default_selling_option' not in existing_columns:
         source_conn.execute("ALTER TABLE products ADD COLUMN default_selling_option TEXT DEFAULT 'retail'")
+    if 'exclusive_selling_option' not in existing_columns:
+        source_conn.execute("ALTER TABLE products ADD COLUMN exclusive_selling_option INTEGER DEFAULT 0")
     if 'pack_display_label' not in existing_columns:
         source_conn.execute("ALTER TABLE products ADD COLUMN pack_display_label TEXT")
     if 'pack_photo_url' not in existing_columns:
@@ -1036,6 +1063,7 @@ def fetch_source_rows(source_conn: sqlite3.Connection) -> list[sqlite3.Row]:
         COALESCE(p.alpha_override, 'AUTO') AS alpha_override,
         COALESCE(p.show_pack_on_storefront, 0) AS show_pack_on_storefront,
         LOWER(COALESCE(NULLIF(TRIM(p.default_selling_option), ''), 'retail')) AS default_selling_option,
+        COALESCE(p.exclusive_selling_option, 0) AS exclusive_selling_option,
         p.pack_display_label,
         p.pack_photo_url,
         p.pack_barcode,
@@ -1235,12 +1263,12 @@ def rebuild_catalog(
         categories.setdefault(category_id, {'id': category_id, 'department_id': dept_id, 'name': category_name, 'slug': category_slug, 'product_count': 0})
         categories[category_id]['product_count'] += 1
 
-        display_name = (row['name'] or row['description'] or row['merkey']).strip()
-        brand_name = (row['brand_name'] or '').strip()
+        display_name = fix_mojibake((row['name'] or row['description'] or row['merkey']).strip())
+        brand_name = fix_mojibake((row['brand_name'] or '').strip())
         slug = slugify(f"{brand_name} {display_name} {row['merkey']}")
         search_text = ' '.join(
             part for part in [
-                row['merkey'], brand_name, display_name, row['description'], row['size'],
+                row['merkey'], brand_name, display_name, fix_mojibake(row['description']), row['size'],
                 dept_name, category_name, row['barcode'], row['all_barcodes'], row['supplier_name'], last_acceptance_date
             ] if part
         ).lower()
@@ -1249,7 +1277,7 @@ def rebuild_catalog(
             row['merkey'], slug, display_name, brand_name, row['description'], row['size'],
             dept_id, dept_name, dept_slug,
             category_id, category_name, category_slug,
-            row['price_retail'], row['price_pack'], row['price_case'], row['pack_quantity'], row['show_pack_on_storefront'], row['default_selling_option'], row['pack_display_label'], row['pack_photo_url'], row['pack_barcode'], row['show_case_on_storefront'], row['case_display_label'], row['case_barcode'], row['case_quantity'], row['case_photo_url'], row['photo_url'], row['data_quality'],
+            row['price_retail'], row['price_pack'], row['price_case'], row['pack_quantity'], row['show_pack_on_storefront'], row['default_selling_option'], row['exclusive_selling_option'], row['pack_display_label'], row['pack_photo_url'], row['pack_barcode'], row['show_case_on_storefront'], row['case_display_label'], row['case_barcode'], row['case_quantity'], row['case_photo_url'], row['photo_url'], row['data_quality'],
             row['supplier_name'], row['class_l1_name'], row['class_l2_name'], row['class_l3_name'],
             row['barcode'], row['all_barcodes'], row['txn_count_24m'], row['qty_sum_24m'],
             row['last_sale_date'], row['priority'], last_acceptance_date,
@@ -1303,13 +1331,13 @@ def rebuild_catalog(
                 merkey, slug, name, brand, description, size,
                 department_id, department_name, department_slug,
                 category_id, category_name, category_slug,
-                price_retail, price_pack, price_case, pack_quantity, show_pack_on_storefront, default_selling_option, pack_display_label, pack_photo_url, pack_barcode, show_case_on_storefront, case_display_label, case_barcode, case_quantity, case_photo_url, photo_url, status,
+                price_retail, price_pack, price_case, pack_quantity, show_pack_on_storefront, default_selling_option, exclusive_selling_option, pack_display_label, pack_photo_url, pack_barcode, show_case_on_storefront, case_display_label, case_barcode, case_quantity, case_photo_url, photo_url, status,
                 supplier_name, class_l1_name, class_l2_name, class_l3_name,
                 barcode, all_barcodes, txn_count_24m, qty_sum_24m,
                 last_sale_date, priority, last_acceptance_date, sellable_state, sellable_note, fulfillment_type, order_unit_label, substitution_policy, fulfillment_note, pricing_basis, min_weight_g, max_weight_g,
                 display_weight_g, display_price, range_label, active, search_text, needs_irl_photo, stock_status, alpha_visible
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             product_rows,
         )
@@ -1320,6 +1348,15 @@ def rebuild_catalog(
         )
 
     report_path = write_exclusion_report(exclusion_records, exclusion_counts, BASE_DIR)
+
+    # Build the intelligent-search FTS index + vocabulary so the published DB
+    # ships ready to search. Best-effort: a failure here must not fail a publish
+    # (the app rebuilds the index lazily on first search as a fallback).
+    try:
+        import search_engine
+        search_engine.ensure_search_index(target_conn, force=True)
+    except Exception as exc:  # pragma: no cover - defensive
+        print(f"Warning: search index build skipped: {exc}")
 
     source_conn.close()
     target_conn.close()

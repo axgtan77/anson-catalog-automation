@@ -1,4 +1,4 @@
-﻿PRAGMA foreign_keys = OFF;
+PRAGMA foreign_keys = OFF;
 
 CREATE TABLE IF NOT EXISTS storefront_metadata (
     key TEXT PRIMARY KEY,
@@ -38,7 +38,10 @@ CREATE TABLE IF NOT EXISTS products (
     price_retail REAL,
     price_pack REAL,
     price_case REAL,
+    pack_quantity INTEGER,
     show_pack_on_storefront INTEGER NOT NULL DEFAULT 0,
+    default_selling_option TEXT NOT NULL DEFAULT 'retail',
+    exclusive_selling_option INTEGER NOT NULL DEFAULT 0,
     pack_display_label TEXT,
     pack_photo_url TEXT,
     pack_barcode TEXT,
@@ -69,6 +72,7 @@ CREATE TABLE IF NOT EXISTS products (
     range_label TEXT,
     needs_irl_photo INTEGER NOT NULL DEFAULT 0,
     stock_status TEXT NOT NULL DEFAULT 'in_stock',
+    alpha_visible INTEGER NOT NULL DEFAULT 0,
     active INTEGER NOT NULL DEFAULT 1,
     published_at TEXT DEFAULT CURRENT_TIMESTAMP,
     search_text TEXT
@@ -100,6 +104,15 @@ CREATE TABLE IF NOT EXISTS order_requests (
     confirmed_at TEXT,
     confirmed_total REAL,
     customer_confirmation_note TEXT,
+    payment_status TEXT NOT NULL DEFAULT 'UNPAID',
+    payment_method TEXT,
+    payment_reference TEXT,
+    payment_proof_path TEXT,
+    payment_amount REAL,
+    payment_submitted_at TEXT,
+    payment_verified_at TEXT,
+    payment_verified_by TEXT,
+    payment_verification_note TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     updated_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
@@ -121,6 +134,9 @@ CREATE TABLE IF NOT EXISTS order_request_items (
     fulfillment_note TEXT,
     removed INTEGER NOT NULL DEFAULT 0,
     removal_reason TEXT,
+    selling_option_key TEXT NOT NULL DEFAULT 'retail',
+    selling_option_label TEXT,
+    selling_option_barcode TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(order_request_id) REFERENCES order_requests(id)
 );
@@ -140,6 +156,25 @@ CREATE TABLE IF NOT EXISTS customers (
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone) WHERE phone IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS idx_customers_email ON customers(email) WHERE email IS NOT NULL;
+
+
+CREATE TABLE IF NOT EXISTS order_payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_request_id INTEGER NOT NULL,
+    payment_method TEXT NOT NULL,
+    reference_number TEXT,
+    amount REAL,
+    proof_path TEXT,
+    status TEXT NOT NULL DEFAULT 'SUBMITTED',
+    customer_note TEXT,
+    staff_note TEXT,
+    submitted_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    verified_at TEXT,
+    verified_by TEXT,
+    FOREIGN KEY(order_request_id) REFERENCES order_requests(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_order_payments_order_request_id ON order_payments(order_request_id, submitted_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_order_requests_status ON order_requests(status, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_order_request_items_order_request_id ON order_request_items(order_request_id);
