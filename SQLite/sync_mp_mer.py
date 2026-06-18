@@ -17,10 +17,10 @@ DB_PATH = 'anson_products.db'
 SOURCE_FPB = r'D:\Projects\CatalogAutomation\Data\MP_MER.FPB'  # Live file location
 TEMP_DIR = Path('../Data/Temp')
 
-# Price field mappings from MP_MER.FPB
-# MEWHOP = Mode 1 (Case/Wholesale)
-# MERET2 = Mode 2 (Pack)
-# MERETP = Mode 3 (Retail/Piece)
+# Price field mappings from MP_MER.FPB (regular -> temporary "New Price" override)
+# MEWHOP -> MEWDIS = Mode 1 (Case/Wholesale)
+# MERET2 -> MERDI2 = Mode 2 (Pack)
+# MERETP -> MERDIS = Mode 3 (Retail/Piece)
 
 
 class FoxProDBF:
@@ -222,10 +222,26 @@ def sync_prices_from_mp_mer(fpb_path, dry_run=False):
 
                 active_merkeys.add(merkey)
 
-                # Extract prices (float/int already parsed for N types)
-                mode1_price = row.get('MEWHOP') or 0.0
-                mode2_price = row.get('MERET2') or 0.0
-                mode3_price = row.get('MERETP') or 0.0
+                # Extract prices (float/int already parsed for N types).
+                #
+                # Each mode has a regular price and an optional encoder-staged
+                # "New Price" (temporary/discount) field. When the New Price is
+                # > 0 the POS charges it instead of the regular price, until the
+                # encoder clears it back to 0.00 (which reverts to regular). The
+                # storefront must mirror that same effective price.
+                #   Mode 1 Case/Wholesale   MEWHOP -> MEWDIS
+                #   Mode 2 Pack             MERET2 -> MERDI2
+                #   Mode 3 Retail/Piece     MERETP -> MERDIS
+                mode1_regular = row.get('MEWHOP') or 0.0
+                mode2_regular = row.get('MERET2') or 0.0
+                mode3_regular = row.get('MERETP') or 0.0
+                mode1_temp = row.get('MEWDIS') or 0.0
+                mode2_temp = row.get('MERDI2') or 0.0
+                mode3_temp = row.get('MERDIS') or 0.0
+
+                mode1_price = mode1_temp if mode1_temp > 0 else mode1_regular
+                mode2_price = mode2_temp if mode2_temp > 0 else mode2_regular
+                mode3_price = mode3_temp if mode3_temp > 0 else mode3_regular
                 cost = row.get('MECOS0') or 0.0
 
                 if mode1_price == 0 and mode2_price == 0 and mode3_price == 0:

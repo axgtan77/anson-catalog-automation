@@ -1,5 +1,7 @@
 # MP_MER.FPB Sync - Complete Guide
 
+> Policy update: Use `MP_MER.FPB` only. Any legacy `MP_MER2.FPB` references are deprecated.
+
 ## 🎯 What This Does
 
 Comprehensive change detection for MP_MER.FPB:
@@ -28,9 +30,6 @@ cd D:\Projects\CatalogAutomation\SQLite
 
 # Sync from last night's MP_MER.FPB
 python sync_mp_mer.py "\\server\share\MP_MER.FPB"
-
-# Or with MP_MER2
-python sync_mp_mer.py "\\server\share\MP_MER.FPB" "\\server\share\MP_MER2.FPB"
 ```
 
 ### **Output Example:**
@@ -126,6 +125,29 @@ When MEDESC changes, it often means:
 4. New price marked as `is_current = 1`
 5. **Full price history maintained!**
 
+### **⚠️ Core pricing rule — temporary "New Price" overrides**
+
+Each selling mode in `MP_MER.FPB` has a **regular price** and an optional
+encoder-staged **temporary "New Price"** (discount) field. When the temp field
+is **> 0**, the POS charges it instead of the regular price, until the encoder
+clears it back to `0.00` (which reverts to the regular price). Encoders use this
+to pre-stage upcoming price changes.
+
+**The effective price the store actually charges is `temp if temp > 0 else regular`,
+and the sync MUST use the effective price** — otherwise the storefront shows the
+regular price while the register rings up the temporary one.
+
+| Mode | Description | Regular field | Temp/"New Price" field |
+|------|-------------|---------------|------------------------|
+| 1 | Case / Wholesale | `MEWHOP` | `MEWDIS` |
+| 2 | Pack / Retail-in-Box | `MERET2` | `MERDI2` |
+| 3 | Retail / Piece (storefront price) | `MERETP` | `MERDIS` |
+
+This override is applied in the price-derivation block of both
+`Scripts/sync_mp_mer.py` and `SQLite/sync_mp_mer.py`. (Discovered 2026-06-17:
+~555 storefront items were overpriced because the sync only read the regular
+fields.)
+
 ### **Query Price History:**
 
 ```sql
@@ -178,7 +200,6 @@ Result:
 ```python
 CONFIG = {
     'mp_mer_path': r'\\YOUR_SERVER\share\MP_MER.FPB',  # UPDATE THIS
-    'mp_mer2_path': r'\\YOUR_SERVER\share\MP_MER2.FPB',  # Or None
     'db_path': 'anson_products.db',
     'last_sync_file': '.last_mp_mer_sync.json',
 }
@@ -328,10 +349,7 @@ ORDER BY created_at DESC;
 CONFIG = {
     # Network path to MP_MER.FPB (updated nightly)
     'mp_mer_path': r'\\server\share\MP_MER.FPB',
-    
-    # Optional: MP_MER2.FPB for additional products
-    'mp_mer2_path': r'\\server\share\MP_MER2.FPB',
-    
+
     # Database location
     'db_path': 'anson_products.db',
     

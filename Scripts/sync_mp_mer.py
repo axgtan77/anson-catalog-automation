@@ -104,6 +104,21 @@ def parse_int(value):
         return 0
 
 
+def money_equal(a, b):
+    """Compare two stored prices for a selling mode where "absent" may be
+    represented as None, 0, or 0.0 (the catalog historically stored 0.0 for
+    modes with no price). All of those count as the same "no price", so e.g.
+    money_equal(None, 0.0) is True — otherwise a pure NULL-vs-0 representation
+    mismatch would look like a change on every item."""
+    a = a if (a is not None and a > 0) else None
+    b = b if (b is not None and b > 0) else None
+    if a is None and b is None:
+        return True
+    if a is None or b is None:
+        return False
+    return abs(a - b) <= 0.01
+
+
 def compute_markup_pct(retail_price, unit_cost):
     """Compute markup percentage over unit cost."""
     if not unit_cost or unit_cost <= 0:
@@ -696,13 +711,16 @@ def sync_mp_mer(db_path='anson_products.db', mp_mer_path=None, mp_sup_path=None,
             for row in cursor.fetchall()
         }
         
-        # Get current prices
+        # Get current prices across all modes so a pack- or case-only change is
+        # detected too (not just retail). price_pack/price_case may be NULL.
         cursor.execute("""
-            SELECT merkey, price_retail
+            SELECT merkey, price_retail, price_pack, price_case
             FROM prices
             WHERE is_current = 1
         """)
-        current_prices = {row[0]: row[1] for row in cursor.fetchall()}
+        current_prices = {
+            row[0]: (row[1], row[2], row[3]) for row in cursor.fetchall()
+        }
         
         # Process each record from MP_MER
         for i, record in enumerate(records, 1):
@@ -714,11 +732,28 @@ def sync_mp_mer(db_path='anson_products.db', mp_mer_path=None, mp_sup_path=None,
             if not medesc:
                 continue
             
-            # Get prices across all selling modes
-            price_raw = record.get('MERETP', '').strip()       # Mode 3 (Retail/Piece)
-            price = parse_float(price_raw)
-            case_price = parse_float(record.get('MEWHOP', ''))  # Mode 1 (Case/Wholesale)
-            pack_price = parse_float(record.get('MERET2', ''))  # Mode 2 (alternate selling mode)
+            # Get prices across all selling modes.
+            #
+            # Each mode has a regular price and an optional encoder-staged
+            # "New Price" (temporary/discount) field. When the New Price is
+            # > 0 the POS charges it instead of the regular price, until the
+            # encoder clears it back to 0.00 (which reverts to the regular
+            # price). The storefront must mirror that same effective price,
+            # otherwise it shows the regular price while the store rings up
+            # the temporary one. Mode -> (regular field, temp field):
+            #   Mode 3 Retail/Piece     MERETP -> MERDIS
+            #   Mode 2 Retail/Box (alt) MERET2 -> MERDI2
+            #   Mode 1 Case/Wholesale   MEWHOP -> MEWDIS
+            regular_retail = parse_float(record.get('MERETP', ''))
+            regular_pack = parse_float(record.get('MERET2', ''))
+            regular_case = parse_float(record.get('MEWHOP', ''))
+            temp_retail = parse_float(record.get('MERDIS', ''))
+            temp_pack = parse_float(record.get('MERDI2', ''))
+            temp_case = parse_float(record.get('MEWDIS', ''))
+
+            price = temp_retail if temp_retail > 0 else regular_retail        # Mode 3 (Retail/Piece)
+            case_price = temp_case if temp_case > 0 else regular_case         # Mode 1 (Case/Wholesale)
+            pack_price = temp_pack if temp_pack > 0 else regular_pack         # Mode 2 (alternate selling mode)
             case_unit = clean_text(record.get('MEPCK1', ''))
             retail_unit = clean_text(record.get('MEPCK3', ''))
             alt_unit = clean_text(record.get('MEPCK2', ''))
@@ -882,8 +917,16 @@ def sync_mp_mer(db_path='anson_products.db', mp_mer_path=None, mp_sup_path=None,
                 
                 # 2. Check price change
                 if merkey in current_prices:
-                    old_price = current_prices[merkey]
-                    if abs(price - old_price) > 0.01:  # Price changed
+                    old_price, old_pack, old_case = current_prices[merkey]
+                    # Detect a change in ANY selling mode, not just retail —
+                    # otherwise a pack/case price added or changed in the POS
+                    # (while retail held steady) would never be captured.
+                    new_pack = pack_price if pack_price > 0 else None
+                    new_case = case_price if case_price > 0 else None
+                    retail_changed = abs(price - old_price) > 0.01
+                    pack_changed = not money_equal(new_pack, old_pack)
+                    case_changed = not money_equal(new_case, old_case)
+                    if retail_changed or pack_changed or case_changed:
                         price_diff = price - old_price
                         price_pct = (price_diff / old_price * 100) if old_price > 0 else 0
                         unit_cost, unit_cost_field = extract_unit_cost(record)
