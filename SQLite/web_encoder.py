@@ -107,6 +107,15 @@ def ensure_runtime_schema():
     if "case_photo_url" not in cols:
         cur.execute("ALTER TABLE products ADD COLUMN case_photo_url TEXT")
         changed = True
+    if "default_selling_option" not in cols:
+        cur.execute("ALTER TABLE products ADD COLUMN default_selling_option TEXT DEFAULT 'retail'")
+        changed = True
+    if "pack_quantity" not in cols:
+        cur.execute("ALTER TABLE products ADD COLUMN pack_quantity INTEGER")
+        changed = True
+    if "exclusive_selling_option" not in cols:
+        cur.execute("ALTER TABLE products ADD COLUMN exclusive_selling_option INTEGER DEFAULT 0")
+        changed = True
     cur.execute("PRAGMA table_info(images)")
     image_cols = {r[1] for r in cur.fetchall()}
     image_runtime_cols = {
@@ -1374,6 +1383,22 @@ def product_update(merkey):
         case_quantity = int((request.form.get("case_quantity") or "").strip() or 0)
     except (TypeError, ValueError):
         case_quantity = 0
+    try:
+        pack_quantity = int((request.form.get("pack_quantity") or "").strip() or 0)
+    except (TypeError, ValueError):
+        pack_quantity = 0
+    # Which selling option the storefront pre-selects on the product page.
+    # Guard: can't default to pack/case unless that option is actually enabled.
+    default_selling_option = (request.form.get("default_selling_option") or "retail").strip().lower()
+    if default_selling_option == "pack" and not show_pack_on_storefront:
+        default_selling_option = "retail"
+    elif default_selling_option == "case" and not show_case_on_storefront:
+        default_selling_option = "retail"
+    elif default_selling_option not in {"retail", "pack", "case"}:
+        default_selling_option = "retail"
+    # "Sell only as this size" — storefront hides every option except the
+    # default one. POS / other barcodes are unaffected (storefront-only).
+    exclusive_selling_option = 1 if (request.form.get("exclusive_selling_option") or "").strip() == "1" else 0
     primary_barcode=(request.form.get("primary_barcode") or "").strip()
     auto_fill_description = (request.form.get("auto_fill_description") or "").strip() == "1"
     auto_generate_size = (request.form.get("auto_generate_size") or "").strip() == "1"
@@ -1440,12 +1465,12 @@ def product_update(merkey):
     cur.execute("""
       UPDATE products SET description=?, name=?, brand_id=?, category_id=?, department_id=?,
                           size=?, weight_volume=?, unit_of_measurement=?,
-                          availability_override=?, alpha_override=?, show_pack_on_storefront=?, pack_display_label=?, pack_photo_url=?, pack_barcode=?,
-                          show_case_on_storefront=?, case_display_label=?, case_barcode=?, case_quantity=?, case_photo_url=?,
+                          availability_override=?, alpha_override=?, show_pack_on_storefront=?, pack_display_label=?, pack_photo_url=?, pack_barcode=?, pack_quantity=?,
+                          show_case_on_storefront=?, case_display_label=?, case_barcode=?, case_quantity=?, case_photo_url=?, default_selling_option=?, exclusive_selling_option=?,
                           data_quality=?, needs_enrichment=?, enrichment_notes=?,
                           updated_at=CURRENT_TIMESTAMP
       WHERE merkey=?
-    """,(description,name,brand_id,category_id,department_id,size,weight_volume,unit,availability_override,alpha_override,show_pack_on_storefront,pack_display_label,pack_photo_url,pack_barcode,show_case_on_storefront,case_display_label,case_barcode,case_quantity,case_photo_url,dq,ne,notes or "Updated via web encoder", merkey))
+    """,(description,name,brand_id,category_id,department_id,size,weight_volume,unit,availability_override,alpha_override,show_pack_on_storefront,pack_display_label,pack_photo_url,pack_barcode,pack_quantity,show_case_on_storefront,case_display_label,case_barcode,case_quantity,case_photo_url,default_selling_option,exclusive_selling_option,dq,ne,notes or "Updated via web encoder", merkey))
 
     # Allow barcode correction from product edit page.
     if primary_barcode:
@@ -1477,6 +1502,9 @@ def product_update(merkey):
         ("availability_override", old_product.get("availability_override") or "AUTO", availability_override),
         ("alpha_override", old_product.get("alpha_override") or "AUTO", alpha_override),
         ("show_pack_on_storefront", str(old_product.get("show_pack_on_storefront") or 0), str(show_pack_on_storefront)),
+        ("pack_quantity", str(old_product.get("pack_quantity") or 0), str(pack_quantity)),
+        ("default_selling_option", old_product.get("default_selling_option") or "retail", default_selling_option),
+        ("exclusive_selling_option", str(old_product.get("exclusive_selling_option") or 0), str(exclusive_selling_option)),
         ("pack_display_label", old_product.get("pack_display_label") or "", pack_display_label),
         ("pack_photo_url", old_product.get("pack_photo_url") or "", pack_photo_url),
         ("pack_barcode", old_product.get("pack_barcode") or "", pack_barcode),
