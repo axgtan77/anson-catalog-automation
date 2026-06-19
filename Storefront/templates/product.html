@@ -447,7 +447,9 @@
       {% if product.badges %}
       <div class="shop-product-badges">
         {% for badge in product.badges %}
+        {% if badge.tone != 'photo' or staff_view %}
         <span class="shop-product-badge shop-product-badge-{{ badge.tone }}">{{ badge.label }}</span>
+        {% endif %}
         {% endfor %}
       </div>
       {% endif %}
@@ -466,7 +468,7 @@
       </div>
 
       <div class="shop-product-price">P{{ "{:,.2f}".format(product.card_price) }}</div>
-      {% if product.price_subtext %}
+      {% if product.price_subtext and (staff_view or not product.price_subtext_staff_only) %}
       <div class="shop-product-price-sub">{{ product.price_subtext }}</div>
       {% endif %}
 
@@ -484,10 +486,16 @@
         <span class="shop-product-stock-pill stock-{{ _stock }}">
           {{ product.availability.label }}
         </span>
-        {% if product.availability.note %}<span class="shop-product-stock-note">{{ product.availability.note }}</span>{% endif %}
+        {# Availability note ("Published for ordering." etc.) is internal — the
+           stock pill already tells customers what they need. Staff-only. #}
+        {% if product.availability.note and staff_view %}<span class="shop-product-stock-note">{{ product.availability.note }}</span>{% endif %}
       </div>
 
-      {# ----- Fulfillment / substitution policy ----- #}
+      {# ----- Fulfillment / substitution policy. Internal "Standard item /
+              Sold using the published shelf price" jargon is staff-only; kept
+              for customers only on fresh/variable-weight items, where "final
+              weight confirmed at fulfillment" is a genuine shopper caveat. ----- #}
+      {% if staff_view or product.pricing_basis == 'per_kg' %}
       <div class="shop-product-fulfillment">
         <strong>{{ product.fulfillment.label }}</strong>
         <span>
@@ -496,13 +504,16 @@
           {% if product.fulfillment.note %}{{ product.fulfillment.note }}{% endif %}
         </span>
       </div>
+      {% endif %}
 
-      {# ----- Selling option pill toggle (only when there's a real choice) ----- #}
-      {% if product.selling_options and product.selling_options|length > 1 %}
+      {# ----- Selling option pill toggle (only when there's a real choice).
+              Cold/Mode-2 options are staff_only — hidden from customers. ----- #}
+      {% set visible_options = product.selling_options if staff_view else (product.selling_options | rejectattr('staff_only') | list) %}
+      {% if visible_options and visible_options|length > 1 %}
       <div class="shop-product-options" role="radiogroup" aria-label="Pack size">
         <div class="shop-product-options-head">Pack size</div>
         <div class="shop-product-options-list">
-          {% for option in product.selling_options %}
+          {% for option in visible_options %}
           <button type="button"
                   class="shop-product-optpill js-selling-option{% if option.is_default %} is-selected{% endif %}"
                   data-option-key="{{ option.key }}"
@@ -557,7 +568,9 @@
   </section>
   {% endif %}
 
-  {# ===== Details key/value grid ===== #}
+  {# ===== Details key/value grid — STAFF-ONLY internal catalog data
+          (supplier/barcode/class/merkey). Hidden from customers. ===== #}
+  {% if staff_view %}
   <section class="shop-product-section">
     <h3>Details</h3>
     <dl class="shop-product-dlgrid">
@@ -579,6 +592,7 @@
       </div>
     </dl>
   </section>
+  {% endif %}
 
   {# ===== Related products ===== #}
   {% if related %}

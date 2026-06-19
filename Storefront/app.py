@@ -1658,6 +1658,15 @@ def inject_editing_request_state():
     }
 
 
+@app.context_processor
+def inject_staff_view():
+    # When a staff member is logged in (same admin session used for order
+    # management), the storefront reveals the full catalog view — internal
+    # Details (supplier/barcode/class/merkey), QC badges, the per-piece price
+    # context, and the chilled/Mode-2 price. Customers see the clean shop.
+    return {'staff_view': bool(session.get(ADMIN_SESSION_KEY))}
+
+
 def wants_json_response() -> bool:
     if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
         return True
@@ -1802,6 +1811,18 @@ def build_product_dict(row: sqlite3.Row) -> dict:
     case_quantity = int(row['case_quantity'] or 0) if 'case_quantity' in row.keys() else 0
     case_photo_url = (row['case_photo_url'] or '').strip() if 'case_photo_url' in row.keys() else ''
     case_barcode = (row['case_barcode'] or '').strip() if 'case_barcode' in row.keys() else ''
+    # "Cold price" detection: for beverages (and any item where the Mode-2/pack
+    # price is only a small markup over retail), the second price is really the
+    # chilled price, not a genuine larger pack. Flag it staff_only so customers
+    # see one clean price while staff still get the full picture. Genuine packs
+    # (a meaningfully bigger gap, e.g. a real case) are NOT flagged.
+    _retail_val = float(row['price_retail']) if row['price_retail'] is not None else 0.0
+    pack_is_cold = bool(
+        pack_price is not None and float(pack_price) > 0 and (
+            department_slug == 'beverages'
+            or (_retail_val > 0 and float(pack_price) < _retail_val * 1.5)
+        )
+    )
     selling_options = []
     if row['price_retail'] is not None:
         selling_options.append({
@@ -1812,6 +1833,7 @@ def build_product_dict(row: sqlite3.Row) -> dict:
             'photo_url': photo_url,
             'size_label': display_size or None,
             'is_default': default_selling_option != 'pack',
+            'staff_only': False,
         })
     if show_pack_price and pack_price is not None and float(pack_price) > 0:
         selling_options.append({
@@ -1823,6 +1845,7 @@ def build_product_dict(row: sqlite3.Row) -> dict:
             'size_label': pack_label or display_size or None,
             'contains_label': f"Contains {pack_quantity} × {display_size}" if pack_quantity > 1 and display_size else None,
             'is_default': default_selling_option == 'pack',
+            'staff_only': pack_is_cold,
         })
     if show_case_price and case_price is not None and float(case_price) > 0:
         selling_options.append({
@@ -1834,6 +1857,7 @@ def build_product_dict(row: sqlite3.Row) -> dict:
             'size_label': case_label or display_size or None,
             'contains_label': f"Contains {case_quantity} × {display_size}" if case_quantity > 1 and display_size else None,
             'is_default': default_selling_option == 'case',
+            'staff_only': False,
         })
     if selling_options and not any(opt.get('is_default') for opt in selling_options):
         selling_options[0]['is_default'] = True
@@ -1869,6 +1893,12 @@ def build_product_dict(row: sqlite3.Row) -> dict:
             # Exclusive items hide the per-piece price entirely; otherwise show
             # it as context beneath the default (pack/case) price.
             else ('' if exclusive_selling_option else f"P{float(row['price_retail'] or 0):,.2f} piece price")
+        ),
+        # The "piece price" context line under a pack/case default is a duplicate
+        # second price for customers — keep it staff-only. The per-kg subtext
+        # (fresh items) stays customer-facing.
+        'price_subtext_staff_only': bool(
+            default_option and default_option.get('key') != 'retail' and not exclusive_selling_option
         ),
         'show_pack_on_storefront': show_pack_price,
         'pack_option': pack_option,

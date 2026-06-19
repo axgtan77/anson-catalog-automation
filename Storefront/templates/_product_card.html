@@ -5,7 +5,9 @@
             {% if card_product.badges %}
             <div class="product-badges">
                 {% for badge in card_product.badges %}
+                {% if badge.tone != 'photo' or staff_view %}
                 <span class="product-badge badge-{{ badge.tone }}">{{ badge.label }}</span>
+                {% endif %}
                 {% endfor %}
             </div>
             {% endif %}
@@ -23,8 +25,8 @@
             <div class="product-meta">{{ card_product.category_name }}</div>
             {% endif %}
             <div class="product-price">P{{ "{:,.2f}".format(card_product.card_price) }}</div>
-            {% if card_product.price_subtext %}<div class="product-price-subtext">{{ card_product.price_subtext }}</div>{% endif %}
-            {% if card_product.pack_option %}<div class="product-pack-subtext">{{ card_product.pack_option.label }}: P{{ "{:,.2f}".format(card_product.pack_option.price) }}</div>{% endif %}
+            {% if card_product.price_subtext and (staff_view or not card_product.price_subtext_staff_only) %}<div class="product-price-subtext">{{ card_product.price_subtext }}</div>{% endif %}
+            {% if card_product.pack_option and (staff_view or not card_product.pack_option.staff_only) %}<div class="product-pack-subtext">{{ card_product.pack_option.label }}: P{{ "{:,.2f}".format(card_product.pack_option.price) }}</div>{% endif %}
             {% if card_product.display_size %}<div class="product-size">{{ card_product.display_size }}</div>{% endif %}
             <div class="availability-chip stock-{{ card_product.availability.stock_status }}">{{ card_product.availability.label }}</div>
         </div>
@@ -32,7 +34,7 @@
 
     <div class="product-card-footer">
         {% if card_product.can_request_order %}
-            {% if card_product.pack_option %}
+            {% if card_product.pack_option and (staff_view or not card_product.pack_option.staff_only) %}
             <a class="product-card-cta product-card-cta-choose" href="{{ url_for('product_page', merkey=card_product.merkey, slug=card_product.slug) }}">Choose size →</a>
             {% else %}
             <form method="post" action="{{ url_for('add_to_cart', merkey=card_product.merkey) }}" class="product-card-cart-form js-ajax-cart-form" data-product-name="{{ card_product.name }}">
