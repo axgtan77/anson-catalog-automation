@@ -1527,11 +1527,15 @@ def fetch_customer_last_fulfilled_order(customer_id: int | None) -> dict | None:
         conn.close()
 
 
-def fetch_homepage_top_sellers(limit: int = 6) -> list[dict]:
-    """Pull this-week's top sellers for the homepage grid. Uses the same
-    txn_count_24m signal that powers the "Top Sellers" sort on department
-    pages, then drops anything that's hidden from homepage tiles or already
-    out of stock — honest stock signals only."""
+def fetch_homepage_top_sellers(limit: int = 6, roster_size: int = 48) -> list[dict]:
+    """Top sellers for the homepage grid — rotated so it doesn't go stale.
+
+    Sorting purely by txn_count_24m showed the same handful of items forever
+    (a 24-month total barely moves). Instead we pull a ROSTER of the top
+    `roster_size` sellers (in stock, homepage-eligible) and display a rotating
+    window of `limit`, advancing one window per day — so the section cycles
+    through the whole roster every ~roster_size/limit days and feels fresh.
+    """
     tile_clause, tile_params = homepage_tile_filter()
     conn = get_conn()
     try:
@@ -1541,17 +1545,28 @@ def fetch_homepage_top_sellers(limit: int = 6) -> list[dict]:
             FROM products
             WHERE active = 1
               AND COALESCE(stock_status, 'in_stock') != 'out_of_stock'
+              AND COALESCE(sellable_state, '') != 'browse_only'
               AND {tile_clause}
             ORDER BY COALESCE(txn_count_24m, 0) DESC,
                      CASE WHEN COALESCE(priority, '') = 'TOP' THEN 0 ELSE 1 END,
                      name COLLATE NOCASE
             LIMIT ?
             """,
-            [*tile_params, limit],
+            [*tile_params, roster_size],
         ).fetchall()
-        return [build_product_dict(row) for row in rows]
     finally:
         conn.close()
+
+    roster = [build_product_dict(row) for row in rows]
+    if len(roster) <= limit:
+        return roster
+
+    # Rotate a window of `limit` through the roster, advancing one window per
+    # day. Deterministic per day (stable within a day, fresh the next), and
+    # wraps so it always returns exactly `limit` items.
+    from datetime import date
+    offset = (date.today().toordinal() * limit) % len(roster)
+    return [roster[(offset + i) % len(roster)] for i in range(limit)]
 
 
 def fetch_homepage_friendly_departments() -> list[dict]:
