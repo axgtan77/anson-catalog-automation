@@ -1527,7 +1527,7 @@ def fetch_customer_last_fulfilled_order(customer_id: int | None) -> dict | None:
         conn.close()
 
 
-def fetch_homepage_top_sellers(limit: int = 6, roster_size: int = 48) -> list[dict]:
+def fetch_homepage_top_sellers(limit: int = 10, roster_size: int = 60) -> list[dict]:
     """Top sellers for the homepage grid — rotated so it doesn't go stale.
 
     Sorting purely by txn_count_24m showed the same handful of items forever
@@ -3468,7 +3468,7 @@ def home():
         spotlight_sections=fetch_department_spotlights(limit_per_department=6),
         # Milestone 3 — Royal Card homepage redesign
         last_fulfilled_order=last_fulfilled_order,
-        homepage_top_sellers=fetch_homepage_top_sellers(limit=6),
+        homepage_top_sellers=fetch_homepage_top_sellers(limit=10),
         friendly_departments=fetch_homepage_friendly_departments(),
         quick_baskets=QUICK_BASKETS,
         customer_first_name=first_name,
