@@ -403,12 +403,11 @@
     </h3>
     <div class="shop-home-baskets">
       {% for basket in quick_baskets %}
-      <a class="shop-home-basket" href="{{ url_for('quick_basket_placeholder', slug=basket.slug) }}">
-        <span class="shop-home-basket-soon">Coming soon</span>
+      <a class="shop-home-basket" href="{{ url_for('quick_basket_page', slug=basket.slug) }}">
         <div class="shop-home-basket-em">{{ basket.emoji }}</div>
         <div class="shop-home-basket-nm">{{ basket.name }}</div>
-        <div class="shop-home-basket-sub">{{ basket['items'] }} items</div>
-        <div class="shop-home-basket-px">starting at ₱{{ basket.price_from }}</div>
+        <div class="shop-home-basket-sub">{{ basket.item_count }} items</div>
+        <div class="shop-home-basket-px">from ₱{{ "{:,.0f}".format(basket.price_from) }}</div>
       </a>
       {% endfor %}
     </div>

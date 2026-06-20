@@ -202,6 +202,11 @@ QUICK_BASKETS = [
     {'slug': 'sinigang',  'emoji': '🥬', 'name': 'Sinigang',       'items': 6, 'price_from': 245},
 ]
 QUICK_BASKET_SLUGS = {b['slug'] for b in QUICK_BASKETS}
+QUICK_BASKETS_BY_SLUG = {b['slug']: b for b in QUICK_BASKETS}
+# Recipe → product mappings live in this editable CSV (basket_slug, item_label,
+# merkey, search_query, quantity). A line resolves to its pinned merkey, or
+# falls back to the search_query when the merkey is missing/unavailable.
+QUICK_BASKETS_CSV = BASE_DIR / 'quick_baskets.csv'
 ADMIN_SESSION_KEY = 'storefront_admin_authenticated'
 ADMIN_USERNAME_SESSION_KEY = 'storefront_admin_username'
 CUSTOMER_SESSION_KEY = 'storefront_customer_id'
@@ -3470,22 +3475,151 @@ def home():
         last_fulfilled_order=last_fulfilled_order,
         homepage_top_sellers=fetch_homepage_top_sellers(limit=10),
         friendly_departments=fetch_homepage_friendly_departments(),
-        quick_baskets=QUICK_BASKETS,
+        quick_baskets=quick_baskets_home_summary(),
         customer_first_name=first_name,
     )
 
 
-@app.route('/quick-basket/<slug>')
-def quick_basket_placeholder(slug: str):
-    """Placeholder route for the experimental Quick Baskets strip on the
-    homepage. We're shipping these as an A/B-removable experiment: measure
-    tap rate, then decide whether to invest in real basket-fill logic.
+def load_quick_basket_lines() -> dict[str, list[dict]]:
+    """Read the recipe → product mapping CSV: slug -> [ {label, merkey,
+    search_query, qty} ]. Missing/unreadable file -> empty (baskets just
+    show as unavailable)."""
+    import csv
+    baskets: dict[str, list[dict]] = {}
+    try:
+        with open(QUICK_BASKETS_CSV, newline='', encoding='utf-8-sig') as fh:
+            for row in csv.DictReader(fh):
+                slug = (row.get('basket_slug') or '').strip()
+                if not slug:
+                    continue
+                try:
+                    qty = max(1, int(row.get('quantity') or 1))
+                except (TypeError, ValueError):
+                    qty = 1
+                baskets.setdefault(slug, []).append({
+                    'label': (row.get('item_label') or '').strip(),
+                    'merkey': (row.get('merkey') or '').strip(),
+                    'search_query': (row.get('search_query') or '').strip(),
+                    'qty': qty,
+                })
+    except (FileNotFoundError, OSError):
+        pass
+    return baskets
 
-    See the homepage `<!-- experiment: Quick Baskets -->` marker."""
-    if slug not in QUICK_BASKET_SLUGS:
+
+def resolve_basket_line(line: dict) -> dict:
+    """Resolve one recipe line to a currently-orderable product: prefer the
+    pinned merkey, fall back to the search_query if it's missing/unavailable."""
+    product = fetch_product(line['merkey']) if line['merkey'] else None
+    if (not product or not is_order_request_allowed(product)) and line['search_query']:
+        conn = get_conn()
+        try:
+            search_engine.ensure_search_index(conn)
+            outcome = search_engine.run_search(conn, line['search_query'], synonyms=SEARCH_SYNONYMS)
+        finally:
+            conn.close()
+        for mk in outcome.merkeys:
+            cand = fetch_product(mk)
+            if cand and is_order_request_allowed(cand):
+                product = cand
+                break
+    available = bool(product and is_order_request_allowed(product))
+    return {'label': line['label'], 'qty': line['qty'],
+            'product': product if available else None, 'available': available}
+
+
+def resolve_quick_basket(slug: str) -> dict | None:
+    meta = QUICK_BASKETS_BY_SLUG.get(slug)
+    if not meta:
+        return None
+    items = [resolve_basket_line(line) for line in load_quick_basket_lines().get(slug, [])]
+    available = [it for it in items if it['available']]
+    estimated_total = sum((it['product'].get('card_price') or 0) * it['qty'] for it in available)
+    return {
+        'meta': meta,
+        'items': items,
+        'available_count': len(available),
+        'total_count': len(items),
+        'estimated_total': estimated_total,
+    }
+
+
+def quick_baskets_home_summary() -> list[dict]:
+    """Light per-tile summary for the homepage strip: real item count and a
+    'from ₱X' estimate from the pinned products' prices (one query)."""
+    lines_by_slug = load_quick_basket_lines()
+    all_merkeys = [ln['merkey'] for lines in lines_by_slug.values() for ln in lines if ln['merkey']]
+    prices: dict[str, float] = {}
+    if all_merkeys:
+        conn = get_conn()
+        try:
+            placeholders = ','.join('?' for _ in all_merkeys)
+            for row in conn.execute(
+                f"SELECT merkey, COALESCE(price_retail, 0) AS p FROM products WHERE merkey IN ({placeholders})",
+                all_merkeys,
+            ).fetchall():
+                prices[row['merkey']] = float(row['p'] or 0)
+        finally:
+            conn.close()
+    summary = []
+    for bucket in QUICK_BASKETS:
+        lines = lines_by_slug.get(bucket['slug'], [])
+        total = sum(prices.get(ln['merkey'], 0) * ln['qty'] for ln in lines)
+        summary.append({
+            'slug': bucket['slug'],
+            'emoji': bucket['emoji'],
+            'name': bucket['name'],
+            'item_count': len(lines),
+            'price_from': round(total) if total else bucket.get('price_from', 0),
+        })
+    return summary
+
+
+@app.route('/quick-basket/<slug>')
+def quick_basket_page(slug: str):
+    basket = resolve_quick_basket(slug)
+    if not basket:
         abort(404)
-    flash('Quick baskets are coming soon — we\'re tracking interest.', 'info')
-    return redirect(url_for('home'))
+    breadcrumbs = [
+        {'label': 'Home', 'url': url_for('home')},
+        {'label': basket['meta']['name'], 'url': None},
+    ]
+    return render_template('quick_basket.html', breadcrumbs=breadcrumbs, basket=basket)
+
+
+@app.post('/quick-basket/<slug>/add')
+def quick_basket_add_all(slug: str):
+    basket = resolve_quick_basket(slug)
+    if not basket:
+        abort(404)
+    cart = get_cart()
+    added = 0
+    for item in basket['items']:
+        if not item['available']:
+            continue
+        product = item['product']
+        options = product.get('selling_options') or []
+        chosen = next((o for o in options if o.get('is_default')), None) or (options[0] if options else None)
+        if not chosen:
+            continue
+        line_key = cart_line_key(product['merkey'], chosen['key'])
+        existing = cart.get(line_key)
+        cart[line_key] = {
+            'merkey': product['merkey'],
+            'qty': (existing.get('qty', 0) if existing else 0) + item['qty'],
+            'option_key': chosen['key'],
+            'label': chosen.get('label') or 'Piece',
+            'price': float(chosen.get('price') or 0.0),
+            'barcode': chosen.get('barcode'),
+            'photo_url': chosen.get('photo_url'),
+        }
+        added += 1
+    save_cart(cart)
+    if added:
+        flash(f"Added {added} item{'s' if added != 1 else ''} from {basket['meta']['name']} to your basket.", 'success')
+    else:
+        flash('None of this basket\'s items are available right now.', 'info')
+    return redirect(url_for('cart_page'))
 
 
 @app.route('/department/<slug>')

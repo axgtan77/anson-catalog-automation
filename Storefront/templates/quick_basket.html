@@ -1,0 +1,90 @@
+{% extends "base.html" %}
+
+{% block extra_head %}
+{% include "_shop_cat_styles.html" %}
+<style>
+  .qb-intro { padding: 0 14px 4px; color: var(--rc-mut); font-size: 13px; }
+  .qb-actions {
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+    padding: 12px 14px; background: #fff; border-bottom: 1px solid var(--rc-line); flex-wrap: wrap;
+  }
+  .qb-total b { font-size: 18px; color: var(--rc-red); }
+  .qb-total small { display: block; color: var(--rc-mut); font-size: 11px; }
+  .qb-addall {
+    background: var(--rc-red); color: #fff; border: 0; border-radius: 12px;
+    padding: 12px 20px; font-weight: 800; font-size: 15px; cursor: pointer;
+  }
+  .qb-items { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; padding: 14px; }
+  @media (min-width: 700px) { .qb-items { grid-template-columns: repeat(4, 1fr); } }
+  @media (min-width: 1024px) { .qb-items { grid-template-columns: repeat(5, 1fr); } }
+  .qb-item { background: #fff; border: 1px solid var(--rc-line); border-radius: 12px; overflow: hidden; }
+  .qb-item img { width: 100%; aspect-ratio: 1; object-fit: contain; background: #fafafa; }
+  .qb-item-body { padding: 8px 10px 10px; }
+  .qb-item-label { font-size: 11px; font-weight: 800; text-transform: uppercase; color: var(--rc-mut); letter-spacing: .3px; }
+  .qb-item-name { font-size: 13px; font-weight: 600; margin: 2px 0; line-height: 1.25; }
+  .qb-item-meta { font-size: 11.5px; color: var(--rc-mut); }
+  .qb-item-px { font-weight: 700; color: var(--rc-red); margin-top: 4px; font-size: 13.5px; }
+  .qb-item-off { opacity: .55; }
+  .qb-item-off .qb-item-body { padding: 14px 10px; }
+  .qb-pill-qty { background: #f1f1f1; border-radius: 999px; padding: 1px 7px; font-size: 11px; font-weight: 700; }
+</style>
+{% endblock %}
+{% block title %}{{ basket.meta.name }} basket | Anson Supermart{% endblock %}
+
+{% block content %}
+<div class="shop-cat">
+
+  <nav class="shop-cat-crumbs" aria-label="Breadcrumb">
+    {% for crumb in breadcrumbs %}
+      {% if crumb.url %}<a href="{{ crumb.url }}">{{ crumb.label }}</a>{% else %}<span>{{ crumb.label }}</span>{% endif %}
+      {% if not loop.last %}<span class="shop-cat-crumbs-sep" aria-hidden="true">›</span>{% endif %}
+    {% endfor %}
+  </nav>
+
+  <div class="shop-cat-subhead">
+    <a class="shop-cat-back" href="{{ url_for('home') }}"
+       onclick="return storefrontGoBack('{{ url_for('home') }}');" aria-label="Back">←</a>
+    <h1 class="shop-cat-title">{{ basket.meta.emoji }} {{ basket.meta.name }}</h1>
+    <span class="shop-cat-count">{{ basket.available_count }} of {{ basket.total_count }} items</span>
+  </div>
+  <div class="qb-intro">Everything for {{ basket.meta.name }} — add the whole basket in one tap, then adjust in your cart.</div>
+
+  <div class="qb-actions">
+    <div class="qb-total">
+      <b>≈ ₱{{ "{:,.2f}".format(basket.estimated_total) }}</b>
+      <small>Estimated — fresh items are weighed &amp; finalized at fulfillment</small>
+    </div>
+    {% if basket.available_count %}
+    <form method="post" action="{{ url_for('quick_basket_add_all', slug=basket.meta.slug) }}">
+      <button type="submit" class="qb-addall">Add all {{ basket.available_count }} to basket →</button>
+    </form>
+    {% endif %}
+  </div>
+
+  <div class="qb-items">
+    {% for item in basket['items'] %}
+      {% if item.available %}
+      <a class="qb-item" href="{{ url_for('product_page', merkey=item.product.merkey) }}">
+        <img src="{{ item.product.display_photo_url }}" alt="{{ item.product.name }}" loading="lazy">
+        <div class="qb-item-body">
+          <div class="qb-item-label">{{ item.label }}</div>
+          <div class="qb-item-name">{{ item.product.name }}</div>
+          <div class="qb-item-meta">{{ item.product.brand }} {% if item.qty > 1 %}<span class="qb-pill-qty">×{{ item.qty }}</span>{% endif %}</div>
+          <div class="qb-item-px">₱{{ "{:,.2f}".format(item.product.card_price) }}</div>
+        </div>
+      </a>
+      {% else %}
+      <div class="qb-item qb-item-off">
+        <div class="qb-item-body">
+          <div class="qb-item-label">{{ item.label }}</div>
+          <div class="qb-item-meta">Currently unavailable</div>
+        </div>
+      </div>
+      {% endif %}
+    {% endfor %}
+  </div>
+
+</div>
+
+{% include "_shop_home_bnav.html" ignore missing %}
+{% endblock %}
