@@ -1235,7 +1235,14 @@ def rebuild_catalog(
         if reason:
             gate_failures.append(('invalid_department', reason))
         reason = check_sales_recency(row, is_fresh=bool(fresh_display))
-        if reason:
+        # A shop shows what's available. In-stock items appear regardless of
+        # sales history; the sales-recency gate now only hides items that are
+        # ALSO out of stock (truly dead SKUs — no stock and no recent sales).
+        # Guarded on inventory_enabled so a missing inventory snapshot can't
+        # flood the shop. To hide a specific in-stock item, staff set
+        # availability_override = FORCE_UNAVAILABLE (excluded above).
+        has_stock_signal = inventory_enabled and stock_status in ('in_stock', 'low_stock')
+        if reason and not has_stock_signal:
             gate_failures.append(('no_recent_sales', reason))
         if gate_failures or image_warning:
             exclusion_records.append({

@@ -26,7 +26,9 @@
         }
         .site-header .brand-text small { display: none; }        /* subtitle hidden */
         .site-header .searchbar { flex: 1; min-width: 0; }
-        .site-header .searchbar input { padding: 7px 10px; font-size: 14px; }
+        /* Reserve right room for the × + 🔍 so neither overlaps the text. */
+        .site-header .searchbar input { padding: 7px 72px 7px 12px; font-size: 14px; }
+        .site-header .searchbar button.searchbar-clear { right: 46px; }
         /* Collapse only the SUBMIT button to a 🔍 icon on mobile. Excludes the
            clear (×) button — otherwise it'd render a second magnifier. */
         .site-header .searchbar button:not(.searchbar-clear) {
@@ -44,18 +46,33 @@
         .site-header .nav-links a { padding: 6px 0; }
       }
 
-      /* Clearable search field — the wrapper lets us float a reset (×) button
-         inside the input on the right. Shown only when the field has text. */
+      /* Clearable search field — a reset (×) button floats inside the input.
+         Two contexts:
+         - In-page search (.shop-cat-search-form): × sits at the right edge.
+         - Header search (.site-header .searchbar): the submit button is
+           absolutely positioned (magnifier inside the pill), so the × is pinned
+           to its LEFT. The header rules use ".site-header .searchbar button.
+           searchbar-clear" (specificity 0,3,1) to outrank the main stylesheet's
+           ".searchbar button" (0,1,1) — otherwise the × inherits the red submit
+           styling and lands on top of the magnifier. */
       .searchbar-field { position: relative; display: flex; flex: 1; min-width: 0; }
-      .searchbar-field input { width: 100%; padding-right: 30px !important; }
+      .searchbar-field input { width: 100%; padding-right: 30px; }
       .searchbar-clear {
-        position: absolute; top: 50%; right: 4px; transform: translateY(-50%);
-        width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%;
-        background: rgba(0,0,0,.08); color: #333; font-size: 15px; line-height: 1;
-        cursor: pointer; display: flex; align-items: center; justify-content: center;
+        position: absolute; top: 50%; right: 4px; bottom: auto; transform: translateY(-50%);
+        width: 22px; height: 22px; min-width: 0; padding: 0; border: 0; border-radius: 50%;
+        background: rgba(0,0,0,.10); color: #333; font-size: 15px; font-weight: 400;
+        line-height: 1; cursor: pointer; display: flex; align-items: center; justify-content: center;
       }
-      .searchbar-clear:hover { background: rgba(0,0,0,.16); }
+      .searchbar-clear:hover { background: rgba(0,0,0,.18); }
       .searchbar-clear[hidden] { display: none; }
+      /* Header search: keep the input's room for the magnifier, pin × to its left. */
+      .site-header .searchbar input { padding-right: 130px; }
+      .site-header .searchbar button.searchbar-clear {
+        right: 100px; top: 50%; bottom: auto; transform: translateY(-50%);
+        width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%;
+        background: rgba(0,0,0,.12); color: #333; font-size: 15px; font-weight: 400; line-height: 1;
+      }
+      .site-header .searchbar button.searchbar-clear[hidden] { display: none; }
     </style>
     {# Per-page scoped CSS lands here so it's parsed BEFORE the body content,
        eliminating the FOUC flash on first paint. #}

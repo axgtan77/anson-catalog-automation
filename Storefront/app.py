@@ -1667,6 +1667,17 @@ def inject_staff_view():
     return {'staff_view': bool(session.get(ADMIN_SESSION_KEY))}
 
 
+def viewer_is_staff() -> bool:
+    """True when the current request is a logged-in staff/admin session.
+    Customer-facing listings and search hide 'browse only' (no-photo, not
+    orderable) items — they're admin-view-only until photographed. Staff see
+    everything. Returns False safely outside a request context."""
+    try:
+        return bool(session.get(ADMIN_SESSION_KEY))
+    except RuntimeError:
+        return False
+
+
 def wants_json_response() -> bool:
     if request.headers.get('X-Requested-With') == 'XMLHttpRequest':
         return True
@@ -2126,6 +2137,10 @@ def fetch_products(
         # Out-of-stock items hidden from the category grid by default (honest
         # stock signal — they're not orderable, so don't show them at all).
         clauses.append("COALESCE(stock_status, 'in_stock') != 'out_of_stock'")
+    if not viewer_is_staff():
+        # "Browse only" items (no photo, not orderable) are admin-view-only —
+        # hidden from customer listings. Staff see them in the catalog view.
+        clauses.append("COALESCE(sellable_state, '') != 'browse_only'")
     if search_query:
         # Tokenize so "chicken nuggets" matches "Chicken Breast Nuggets" (each
         # token must appear in search_text, but not necessarily adjacent).
@@ -2206,6 +2221,10 @@ def search_products(
         placeholders = ','.join('?' for _ in merkeys)
         clauses = [f'merkey IN ({placeholders})', 'active = 1']
         params: list[object] = list(merkeys)
+        if not viewer_is_staff():
+            # Browse-only (no-photo) items are admin-view-only — keep them out
+            # of customer search results too.
+            clauses.append("COALESCE(sellable_state, '') != 'browse_only'")
         if department_slug:
             clauses.append('department_slug = ?')
             params.append(department_slug)
@@ -3603,6 +3622,10 @@ def brand_spotlight(slug: str):
 def product_page(merkey: str):
     product = fetch_product(merkey)
     if not product:
+        abort(404)
+    # Browse-only (no-photo) items are admin-view-only — customers can't reach
+    # the page even via a direct link. Staff see it.
+    if product.get('sellable_state') == 'browse_only' and not viewer_is_staff():
         abort(404)
 
     breadcrumbs = [
