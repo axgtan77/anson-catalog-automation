@@ -192,21 +192,14 @@ FRIENDLY_DEPARTMENT_BUCKETS = [
 ]
 FRIENDLY_BUCKETS_BY_SLUG = {b['slug']: b for b in FRIENDLY_DEPARTMENT_BUCKETS if b.get('slug')}
 
-# Static placeholder quick-basket recipes. These are experimental UX bets —
-# wired to a placeholder route that flashes "coming soon". We measure tap
-# rate before investing in actual basket-fill logic.
-QUICK_BASKETS = [
-    {'slug': 'adobo',     'emoji': '🍚', 'name': 'Adobo Night',    'items': 6, 'price_from': 285},
-    {'slug': 'pancit',    'emoji': '🍜', 'name': 'Pancit Canton',  'items': 5, 'price_from': 180},
-    {'slug': 'breakfast', 'emoji': '🍳', 'name': 'Breakfast Run',  'items': 7, 'price_from': 395},
-    {'slug': 'sinigang',  'emoji': '🥬', 'name': 'Sinigang',       'items': 6, 'price_from': 245},
-]
-QUICK_BASKET_SLUGS = {b['slug'] for b in QUICK_BASKETS}
-QUICK_BASKETS_BY_SLUG = {b['slug']: b for b in QUICK_BASKETS}
-# Recipe → product mappings live in this editable CSV (basket_slug, item_label,
-# merkey, search_query, quantity). A line resolves to its pinned merkey, or
-# falls back to the search_query when the merkey is missing/unavailable.
+# Quick Baskets are fully CSV-managed — no code edit to add/edit a basket:
+#   quick_baskets.csv       — basket definitions (slug, emoji, name), in order.
+#   quick_basket_items.csv  — recipe lines (basket_slug, item_label, merkey,
+#                             search_query, quantity). A line resolves to its
+#                             pinned merkey, or falls back to search_query when
+#                             the merkey is missing/unavailable.
 QUICK_BASKETS_CSV = BASE_DIR / 'quick_baskets.csv'
+QUICK_BASKET_ITEMS_CSV = BASE_DIR / 'quick_basket_items.csv'
 ADMIN_SESSION_KEY = 'storefront_admin_authenticated'
 ADMIN_USERNAME_SESSION_KEY = 'storefront_admin_username'
 CUSTOMER_SESSION_KEY = 'storefront_customer_id'
@@ -3480,6 +3473,32 @@ def home():
     )
 
 
+def load_quick_baskets_meta() -> list[dict]:
+    """Basket definitions from quick_baskets.csv (slug, emoji, name), in file
+    order. This is the full list of baskets — add a row to add a basket, no
+    code change. Missing/unreadable file -> empty."""
+    import csv
+    out: list[dict] = []
+    try:
+        with open(QUICK_BASKETS_CSV, newline='', encoding='utf-8-sig') as fh:
+            for row in csv.DictReader(fh):
+                slug = (row.get('slug') or '').strip()
+                if not slug:
+                    continue
+                out.append({
+                    'slug': slug,
+                    'emoji': (row.get('emoji') or '🧺').strip() or '🧺',
+                    'name': (row.get('name') or slug).strip() or slug,
+                })
+    except (FileNotFoundError, OSError):
+        pass
+    return out
+
+
+def quick_basket_meta(slug: str) -> dict | None:
+    return next((b for b in load_quick_baskets_meta() if b['slug'] == slug), None)
+
+
 def load_quick_basket_lines() -> dict[str, list[dict]]:
     """Read the recipe → product mapping CSV: slug -> [ {label, merkey,
     search_query, qty} ]. Missing/unreadable file -> empty (baskets just
@@ -3487,7 +3506,7 @@ def load_quick_basket_lines() -> dict[str, list[dict]]:
     import csv
     baskets: dict[str, list[dict]] = {}
     try:
-        with open(QUICK_BASKETS_CSV, newline='', encoding='utf-8-sig') as fh:
+        with open(QUICK_BASKET_ITEMS_CSV, newline='', encoding='utf-8-sig') as fh:
             for row in csv.DictReader(fh):
                 slug = (row.get('basket_slug') or '').strip()
                 if not slug:
@@ -3529,7 +3548,7 @@ def resolve_basket_line(line: dict) -> dict:
 
 
 def resolve_quick_basket(slug: str) -> dict | None:
-    meta = QUICK_BASKETS_BY_SLUG.get(slug)
+    meta = quick_basket_meta(slug)
     if not meta:
         return None
     items = [resolve_basket_line(line) for line in load_quick_basket_lines().get(slug, [])]
@@ -3562,7 +3581,7 @@ def quick_baskets_home_summary() -> list[dict]:
         finally:
             conn.close()
     summary = []
-    for bucket in QUICK_BASKETS:
+    for bucket in load_quick_baskets_meta():
         lines = lines_by_slug.get(bucket['slug'], [])
         total = sum(prices.get(ln['merkey'], 0) * ln['qty'] for ln in lines)
         summary.append({
@@ -3570,7 +3589,7 @@ def quick_baskets_home_summary() -> list[dict]:
             'emoji': bucket['emoji'],
             'name': bucket['name'],
             'item_count': len(lines),
-            'price_from': round(total) if total else bucket.get('price_from', 0),
+            'price_from': round(total),
         })
     return summary
 

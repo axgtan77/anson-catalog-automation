@@ -1,28 +1,5 @@
-basket_slug,item_label,merkey,search_query,quantity
-adobo,Pork Belly,4127,pork belly liempo,1
-adobo,Soy Sauce,1366068,silver swan soy sauce,1
-adobo,Vinegar,2520346,datu puti vinegar,1
-adobo,Garlic,9585,garlic,1
-adobo,Bay Leaves,1601343,laurel leaves,1
-adobo,Peppercorn,3889077,black pepper whole,1
-adobo,Cooking Oil,1648522,cooking oil,1
-pancit,Pancit Canton,3228432,pancit canton,2
-pancit,Soy Sauce,1366068,silver swan soy sauce,1
-pancit,Carrots,9566,carrots,1
-pancit,Cabbage,9565,cabbage,1
-pancit,Garlic,9585,garlic,1
-pancit,Onion,9584,onion,1
-pancit,Cooking Oil,1648522,cooking oil,1
-breakfast,Eggs,1475951,white eggs,1
-breakfast,Hotdog,2545165,purefoods hotdog,1
-breakfast,Rice,9618,premium rice,1
-breakfast,Coffee,4248606,nescafe 3in1,1
-breakfast,Bread,1193282,tasty bread,1
-breakfast,Corned Beef,6383,corned beef,1
-sinigang,Pork Sinigang Cut,4015,pork sinigang,1
-sinigang,Sinigang Mix,4132998,knorr sinigang mix,1
-sinigang,Kangkong,9570,kangkong,1
-sinigang,Radish,9581,radish labanos,1
-sinigang,Eggplant,9594,eggplant talong,1
-sinigang,Okra,9572,okra,1
-sinigang,Tomato,9573,tomato,1
+slug,emoji,name
+adobo,🍚,Adobo Night
+pancit,🍜,Pancit Canton
+breakfast,🍳,Breakfast Run
+sinigang,🥬,Sinigang
