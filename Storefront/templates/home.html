@@ -407,7 +407,7 @@
         <span class="shop-home-basket-soon">Coming soon</span>
         <div class="shop-home-basket-em">{{ basket.emoji }}</div>
         <div class="shop-home-basket-nm">{{ basket.name }}</div>
-        <div class="shop-home-basket-sub">{{ basket.items }} items</div>
+        <div class="shop-home-basket-sub">{{ basket['items'] }} items</div>
         <div class="shop-home-basket-px">starting at ₱{{ basket.price_from }}</div>
       </a>
       {% endfor %}
