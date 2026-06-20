@@ -1,0 +1,301 @@
+<style>
+  /* Responsive width tiers shared across .shop-* templates.
+     Phone (mobile, ≤640px)  → hugs the edges, no max.
+     Tablet (641-1023)       → 760px.
+     Desktop (1024-1439)     → 1100px.
+     Wide (≥1440)            → 1320px.
+     The max-width values match the `.wrap` chrome (`min(1200px, calc(100% - 40px))`)
+     well enough that page content lines up roughly with the header band.
+     `_shop_cat_styles.html` declares the variables; the other templates pick
+     them up via their own `.shop-* {}` block. */
+  .shop-cat {
+    --rc-red:    #C0102E;
+    --rc-red-2:  #e23b54;
+    --rc-dark:   #6e0a1c;
+    --rc-gold:   #b8902b;
+    --rc-ink:    #1c1c22;
+    --rc-mut:    #7a7a86;
+    --rc-line:   #ececf1;
+    --rc-shelf:  #f7f3ec;
+    --rc-paper:  #fbfbfd;
+    margin: 0 auto;
+    max-width: 100%;
+    color: var(--rc-ink);
+    font-family: -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    padding-bottom: 80px;
+  }
+  @media (min-width: 641px)  { .shop-cat { max-width: 760px; } }
+  @media (min-width: 1024px) { .shop-cat { max-width: 1100px; } }
+  @media (min-width: 1440px) { .shop-cat { max-width: 1320px; } }
+
+  /* Light desktop crumbs */
+  .shop-cat .shop-cat-crumbs {
+    padding: 10px 16px 0; font-size: 11.5px; color: var(--rc-mut); display: flex;
+    flex-wrap: wrap; gap: 4px; align-items: center;
+  }
+  .shop-cat .shop-cat-crumbs a { color: var(--rc-mut); text-decoration: none; }
+  .shop-cat .shop-cat-crumbs a:hover { color: var(--rc-red); }
+  .shop-cat .shop-cat-crumbs-sep { color: #c5c5cc; }
+
+  /* Subhead: back · title · count */
+  .shop-cat .shop-cat-subhead {
+    padding: 11px 14px; background: #fff; border-bottom: 1px solid var(--rc-line);
+    display: flex; align-items: center; gap: 10px; margin-top: 8px;
+    border-top: 1px solid var(--rc-line);
+  }
+  .shop-cat .shop-cat-back {
+    width: 32px; height: 32px; display: inline-flex; align-items: center; justify-content: center;
+    background: #fbe9ec; color: var(--rc-red); border-radius: 9px;
+    font-size: 18px; text-decoration: none; flex-shrink: 0; font-weight: 700;
+  }
+  .shop-cat .shop-cat-back:hover { background: #f4cfd6; }
+  .shop-cat .shop-cat-title {
+    font-family: Georgia, "Times New Roman", serif; font-size: 18px;
+    flex: 1; margin: 0; font-weight: 600; color: var(--rc-ink); min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .shop-cat .shop-cat-count { font-size: 12.5px; color: var(--rc-mut); white-space: nowrap; }
+
+  /* Sub-category chip strip */
+  .shop-cat .shop-cat-subchips {
+    padding: 9px 14px; background: #fff; border-bottom: 1px solid var(--rc-line);
+    display: flex; gap: 7px; overflow-x: auto; scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+  .shop-cat .shop-cat-subchips::-webkit-scrollbar { display: none; }
+  .shop-cat .shop-cat-chip {
+    background: #f6f6f9; border: 1px solid var(--rc-line); border-radius: 18px;
+    padding: 6px 12px; font-size: 12px; font-weight: 600; color: var(--rc-ink);
+    white-space: nowrap; text-decoration: none; flex-shrink: 0;
+  }
+  .shop-cat .shop-cat-chip:hover { background: #ececf1; }
+  .shop-cat .shop-cat-chip-on {
+    background: var(--rc-red); color: #fff; border-color: var(--rc-red);
+  }
+  .shop-cat .shop-cat-chip-on:hover { background: var(--rc-dark); border-color: var(--rc-dark); }
+
+  /* Filter bar — pills + sort on right */
+  .shop-cat .shop-cat-filterbar {
+    padding: 9px 14px 9px; background: var(--rc-paper);
+    display: flex; justify-content: space-between; align-items: flex-start;
+    border-bottom: 1px solid var(--rc-line); gap: 8px;
+    position: relative;
+  }
+  .shop-cat .shop-cat-filterbar-left {
+    display: flex; gap: 7px; flex-wrap: wrap; flex: 1;
+  }
+  .shop-cat .shop-cat-filterpill {
+    background: #fff; border: 1px solid var(--rc-line); border-radius: 18px;
+    padding: 6px 12px; font-size: 12px; font-weight: 600; color: var(--rc-ink);
+    display: inline-flex; align-items: center; gap: 4px;
+    text-decoration: none; cursor: pointer; user-select: none;
+    list-style: none;
+  }
+  .shop-cat .shop-cat-filterpill::-webkit-details-marker { display: none; }
+  .shop-cat .shop-cat-filterpill em { font-style: normal; color: var(--rc-mut); margin-right: 3px; }
+  .shop-cat .shop-cat-filterpill-has {
+    background: #fbe9ec; border-color: #f0c5cc; color: var(--rc-red);
+  }
+  .shop-cat .shop-cat-filterpill-has em { color: var(--rc-red); opacity: .8; }
+
+  /* Bottom-sheet powered by <details> */
+  .shop-cat .shop-cat-sheet { position: relative; }
+  .shop-cat .shop-cat-sheet-right { margin-left: auto; }
+  .shop-cat .shop-cat-sheet[open] > .shop-cat-filterpill {
+    background: #fff; border-color: var(--rc-red); color: var(--rc-red);
+    box-shadow: 0 4px 12px rgba(192,16,46,.10);
+  }
+  .shop-cat .shop-cat-sheet-body {
+    position: absolute; top: calc(100% + 6px); left: 0;
+    min-width: 240px; max-width: 320px;
+    background: #fff; border: 1px solid var(--rc-line);
+    border-radius: 14px; box-shadow: 0 14px 28px rgba(20,10,30,.14);
+    padding: 12px 14px; z-index: 30;
+  }
+  .shop-cat .shop-cat-sheet-body-right { left: auto; right: 0; }
+  .shop-cat .shop-cat-sheet-head {
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 11.5px; font-weight: 700; color: var(--rc-mut);
+    letter-spacing: .06em; text-transform: uppercase; margin-bottom: 8px;
+  }
+  .shop-cat .shop-cat-sheet-clear {
+    color: var(--rc-red); text-decoration: none; font-weight: 700; font-size: 11px;
+    text-transform: none; letter-spacing: 0;
+  }
+  .shop-cat .shop-cat-sheet-empty {
+    margin: 4px 0; font-size: 12px; color: var(--rc-mut);
+  }
+
+  /* Brand list — multi-select checkboxes */
+  .shop-cat .shop-cat-brandlist {
+    max-height: 280px; overflow-y: auto;
+    display: flex; flex-direction: column; gap: 2px;
+    margin-bottom: 8px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .shop-cat .shop-cat-brandopt {
+    display: flex; align-items: center; gap: 9px;
+    padding: 7px 4px; border-radius: 6px;
+    font-size: 12.5px; color: var(--rc-ink); cursor: pointer;
+  }
+  .shop-cat .shop-cat-brandopt:hover { background: #fbe9ec; }
+  .shop-cat .shop-cat-brandopt input[type="checkbox"] {
+    margin: 0; accent-color: var(--rc-red); width: 16px; height: 16px;
+  }
+  .shop-cat .shop-cat-brandopt-name { flex: 1; }
+  .shop-cat .shop-cat-brandopt-count { font-size: 11px; color: var(--rc-mut); }
+
+  .shop-cat .shop-cat-sheet-actions {
+    display: flex; justify-content: flex-end;
+    border-top: 1px solid var(--rc-line); padding-top: 9px;
+  }
+  .shop-cat .shop-cat-sheet-apply {
+    background: var(--rc-red); color: #fff; border: 0; cursor: pointer;
+    font-weight: 700; padding: 7px 18px; border-radius: 9px;
+    font-size: 12.5px;
+  }
+  .shop-cat .shop-cat-sheet-apply:hover { background: var(--rc-dark); }
+
+  /* Price + Sort option list — single-select via links */
+  .shop-cat .shop-cat-pricelist { display: flex; flex-direction: column; gap: 2px; }
+  .shop-cat .shop-cat-priceopt {
+    padding: 8px 10px; border-radius: 8px; font-size: 12.5px;
+    color: var(--rc-ink); text-decoration: none;
+  }
+  .shop-cat .shop-cat-priceopt:hover { background: #f6f6f9; }
+  .shop-cat .shop-cat-priceopt-on {
+    background: #fbe9ec; color: var(--rc-red); font-weight: 700;
+  }
+
+  /* Product grid — keep it tight on mobile, breathe on desktop */
+  .shop-cat .shop-cat-pgrid { padding: 12px 12px 8px; }
+  .shop-cat .shop-cat-cards {
+    display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px;
+  }
+  .shop-cat .shop-cat-cards .product-card {
+    background: #fff; border: 1px solid var(--rc-line); border-radius: 12px;
+    overflow: hidden;
+  }
+  /* Hide the duplicate "department / category" meta line in the cards on the
+     category page — it's redundant when you're already on that page. */
+  .shop-cat .shop-cat-cards .product-meta { display: none; }
+  .shop-cat .shop-cat-cards .product-brand {
+    font-size: 10.5px; color: var(--rc-mut); text-transform: uppercase;
+    letter-spacing: .05em; margin-bottom: 2px;
+  }
+
+  /* Pager */
+  .shop-cat .shop-cat-pager {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 12px 6px 4px; font-size: 12px;
+  }
+  .shop-cat .shop-cat-pager a {
+    color: var(--rc-red); text-decoration: none; font-weight: 700;
+    padding: 6px 10px; border-radius: 8px; border: 1px solid var(--rc-line);
+    background: #fff;
+  }
+  .shop-cat .shop-cat-pager a:hover { background: #fbe9ec; }
+  .shop-cat .shop-cat-pager-off {
+    color: #bdbdc6; padding: 6px 10px; border: 1px solid var(--rc-line);
+    border-radius: 8px; background: #f7f7fa;
+  }
+  .shop-cat .shop-cat-pager-pos { color: var(--rc-mut); }
+  .shop-cat .shop-cat-endhint {
+    text-align: center; color: var(--rc-mut); font-size: 11.5px;
+    padding: 12px 0 18px; margin: 0;
+  }
+
+  /* Empty state */
+  .shop-cat .shop-cat-empty {
+    padding: 28px 16px; text-align: center; color: var(--rc-mut);
+  }
+  .shop-cat .shop-cat-empty strong { color: var(--rc-ink); display: block; margin-bottom: 8px; }
+  .shop-cat .shop-cat-empty-clear {
+    color: var(--rc-red); font-weight: 700; text-decoration: none;
+  }
+
+  /* Sticky bottom nav — mobile only (≤640px). Browser has its own back/forward
+     above that breakpoint, so the bnav strip would just be visual noise. */
+  .shop-cat .shop-cat-bottom-spacer { height: 12px; }
+  .shop-cat .shop-cat-bnav { display: none; }
+  @media (max-width: 640px) {
+    .shop-cat .shop-cat-bnav {
+      display: flex; position: fixed; left: 0; right: 0; bottom: 0;
+      background: #fff; border-top: 1px solid var(--rc-line);
+      padding: 7px 4px max(10px, env(safe-area-inset-bottom)) 4px;
+      justify-content: space-around; z-index: 100;
+      box-shadow: 0 -6px 18px rgba(20,10,30,.06);
+    }
+    .shop-cat .shop-cat-bnav-item {
+      flex: 1; display: flex; flex-direction: column; align-items: center; gap: 3px;
+      padding: 4px 0; color: var(--rc-mut); font-size: 10.5px; font-weight: 600;
+      text-decoration: none; position: relative;
+    }
+    .shop-cat .shop-cat-bnav-on { color: var(--rc-red); }
+    .shop-cat .shop-cat-bnav-e { font-size: 18px; line-height: 1; }
+    .shop-cat .shop-cat-bnav-ct {
+      position: absolute; top: 0; right: calc(50% - 22px);
+      background: var(--rc-gold); color: var(--rc-ink);
+      font-size: 9px; font-weight: 800;
+      min-width: 16px; height: 16px; padding: 0 5px; border-radius: 10px;
+      display: inline-flex; align-items: center; justify-content: center;
+    }
+    .shop-cat { padding-bottom: 96px; }
+
+    /* Subtitle pinning so the section reads clearly on small screens. */
+    .shop-cat .shop-cat-title { font-size: 17px; }
+
+    /* On very narrow screens, let filter pills hug the left edge cleanly. */
+    .shop-cat .shop-cat-filterbar { padding: 9px 12px; }
+    .shop-cat .shop-cat-pgrid { padding: 10px 10px 8px; }
+  }
+
+  /* ===== Tablet: 3-up grid, breathe a bit. ===== */
+  @media (min-width: 641px) {
+    .shop-cat .shop-cat-cards { grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .shop-cat .shop-cat-sheet-body { min-width: 280px; }
+    .shop-cat .shop-cat-pgrid { padding: 14px 14px 10px; }
+  }
+
+  /* ===== Desktop: 4-up grid, larger pills inline with sort, no horizontal
+     scroll on sub-chips, no mobile back-arrow. ===== */
+  @media (min-width: 1024px) {
+    .shop-cat .shop-cat-cards { grid-template-columns: repeat(4, 1fr); gap: 14px; }
+    .shop-cat .shop-cat-pgrid { padding: 18px 18px 12px; }
+
+    /* Bigger touch targets, padded out so filter pills line up nicely with sort. */
+    .shop-cat .shop-cat-filterpill { padding: 8px 14px; font-size: 13px; }
+    .shop-cat .shop-cat-filterbar { padding: 11px 18px; }
+
+    /* Keep the in-page back arrow on desktop too — staff use it while browsing
+       (it falls back to Home if there's no in-site history). */
+    .shop-cat .shop-cat-subhead { padding: 14px 18px; }
+    .shop-cat .shop-cat-title { font-size: 22px; }
+
+    /* Subcats wrap as chips rather than horizontally scrolling. */
+    .shop-cat .shop-cat-subchips {
+      flex-wrap: wrap; overflow-x: visible; padding: 12px 18px;
+    }
+
+    /* Crumbs read better at the wider container. */
+    .shop-cat .shop-cat-crumbs { padding: 14px 18px 0; font-size: 12.5px; }
+  }
+
+  /* ===== Wide: 5-up grid (some templates can opt-up to 6 via .shop-cat-cards-dense). ===== */
+  @media (min-width: 1440px) {
+    .shop-cat .shop-cat-cards { grid-template-columns: repeat(5, 1fr); gap: 16px; }
+    .shop-cat .shop-cat-cards-dense { grid-template-columns: repeat(6, 1fr); }
+  }
+
+  /* Make the stock chip from _product_card.html match the mockup's pill style
+     (small, rounded, on the photo). It already renders inside the card body
+     in our partial, so we just upgrade the visual treatment within scope. */
+  .shop-cat .shop-cat-cards .availability-chip {
+    display: inline-block; margin-top: 4px;
+    padding: 2px 8px; border-radius: 10px; font-size: 10px; font-weight: 700;
+    letter-spacing: .03em; background: #e7f5ec; border: 1px solid #b9e2c3;
+  }
+  .shop-cat .shop-cat-cards .availability-chip.stock-in_stock { background: #e7f5ec; color: #14784d; border-color: #b9e2c3; }
+  .shop-cat .shop-cat-cards .availability-chip.stock-low_stock { background: #fff3da; color: #8a6708; border-color: #f0d49a; }
+  .shop-cat .shop-cat-cards .availability-chip.stock-out_of_stock { background: #fdecee; color: #b00020; border-color: #f4b6c0; }
+</style>
