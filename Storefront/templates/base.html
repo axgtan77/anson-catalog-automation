@@ -28,7 +28,7 @@
         .site-header .searchbar { flex: 1; min-width: 0; }
         /* Reserve right room for the × + 🔍 so neither overlaps the text. */
         .site-header .searchbar input { padding: 7px 72px 7px 12px; font-size: 14px; }
-        .site-header .searchbar button.searchbar-clear { right: 46px; }
+        .site-header .searchbar button.searchbar-clear { right: 46px !important; }
         /* Collapse only the SUBMIT button to a 🔍 icon on mobile. Excludes the
            clear (×) button — otherwise it'd render a second magnifier. */
         .site-header .searchbar button:not(.searchbar-clear) {
@@ -65,14 +65,19 @@
       }
       .searchbar-clear:hover { background: rgba(0,0,0,.18); }
       .searchbar-clear[hidden] { display: none; }
-      /* Header search: keep the input's room for the magnifier, pin × to its left. */
-      .site-header .searchbar input { padding-right: 130px; }
+      /* Header search: keep the input's room for the submit button, pin × to
+         its LEFT. !important to be sure it beats the main stylesheet's
+         ".searchbar button" (which would otherwise drop the × onto the button). */
+      .site-header .searchbar input { padding-right: 130px !important; }
       .site-header .searchbar button.searchbar-clear {
-        right: 100px; top: 50%; bottom: auto; transform: translateY(-50%);
-        width: 22px; height: 22px; padding: 0; border: 0; border-radius: 50%;
-        background: rgba(0,0,0,.12); color: #333; font-size: 15px; font-weight: 400; line-height: 1;
+        right: 100px !important; left: auto !important;
+        top: 50% !important; bottom: auto !important; transform: translateY(-50%) !important;
+        width: 22px !important; height: 22px !important; padding: 0 !important;
+        border: 0 !important; border-radius: 50% !important;
+        background: rgba(0,0,0,.12) !important; color: #333 !important;
+        font-size: 15px !important; font-weight: 400 !important; line-height: 1 !important;
       }
-      .site-header .searchbar button.searchbar-clear[hidden] { display: none; }
+      .site-header .searchbar button.searchbar-clear[hidden] { display: none !important; }
     </style>
     {# Per-page scoped CSS lands here so it's parsed BEFORE the body content,
        eliminating the FOUC flash on first paint. #}
@@ -86,7 +91,7 @@
         <div class="utility-bar">
             <div class="wrap utility-bar-inner">
                 <span>Fresh goods · Daily essentials · Pharmacy · Bakery · Neighborhood service</span>
-                <span>Catalog updated from Anson's internal merchandise workflow</span>
+                <span>Prices &amp; availability updated daily</span>
             </div>
         </div>
 
