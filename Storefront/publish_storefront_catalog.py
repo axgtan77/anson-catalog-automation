@@ -1213,11 +1213,22 @@ def rebuild_catalog(
             acceptance_dates.get(row['merkey']),
             delivery_dates.get(row['merkey']),
         )
-        if fresh_display and not force_available and not has_recent_acceptance(
-            last_acceptance_date,
-            max_fresh_signal_date,
-            get_fresh_acceptance_window_days(row, fresh_acceptance_days),
-        ):
+        # Fresh items normally need a recent delivery acceptance. But derivative
+        # cuts (e.g. beef steaks the butcher carves from a primal beef delivery)
+        # never get their OWN acceptance record — yet they're genuinely
+        # available. Trust two more availability signals, same as the in-house
+        # production logic above: a recent sale (it's being actively cut & sold)
+        # or positive stock on hand. FORCE_UNAVAILABLE still hides any item.
+        fresh_available = (
+            has_recent_acceptance(
+                last_acceptance_date,
+                max_fresh_signal_date,
+                get_fresh_acceptance_window_days(row, fresh_acceptance_days),
+            )
+            or sold_recently
+            or (inventory_enabled and stock_qty > 0)
+        )
+        if fresh_display and not force_available and not fresh_available:
             continue
 
         cat_override = category_overrides.get(row['merkey'])
