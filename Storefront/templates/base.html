@@ -217,18 +217,16 @@
         });
 
         window.storefrontGoBack = (fallbackUrl) => {
-            try {
-                const referrer = document.referrer;
-                if (referrer) {
-                    const refUrl = new URL(referrer, window.location.origin);
-                    if (refUrl.origin === window.location.origin && refUrl.pathname !== window.location.pathname) {
-                        window.location.href = refUrl.href;
-                        return false;
-                    }
-                }
-            } catch (error) {
-                // Fall back to the provided URL below.
+            // Use the REAL browser history so it behaves exactly like the
+            // browser's back button. The old version navigated to
+            // document.referrer, which is a forward navigation — each page's
+            // referrer then points at the other, causing an A<->B loop.
+            // history.back() pops the stack (no new entry, no loop).
+            if (window.history.length > 1) {
+                window.history.back();
+                return false;
             }
+            // No in-site history (opened directly / new tab) — go to fallback.
             window.location.href = fallbackUrl;
             return false;
         };
