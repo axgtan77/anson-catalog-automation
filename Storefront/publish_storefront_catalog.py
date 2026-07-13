@@ -5,6 +5,8 @@ import csv
 import re
 import sqlite3
 import struct
+import subprocess
+import tempfile
 from datetime import date, datetime, timedelta
 from pathlib import Path
 
@@ -16,11 +18,17 @@ OVERRIDES_PATH = BASE_DIR / 'storefront_category_overrides.csv'
 FRESH_DISPLAY_OVERRIDES_PATH = BASE_DIR / 'storefront_fresh_display_overrides.csv'
 DEFAULT_WI_ESC_CANDIDATES = [
     Path('/mnt/ssims/SSIMS/WI_ESC.FPB'),
-    Path('/mnt/ssims/SSIMS/WI_ESC.FPB'),
 ]
 DEFAULT_WI_SDR_CANDIDATES = [
     Path('/mnt/ssims/SSIMS/WI_SDR.FPB'),
-    Path('/mnt/ssims/SSIMS/WI_SDR.FPB'),
+]
+BACKUP_LZH_DIR = Path('/mnt/ssims_bak')
+FALLBACK_DBF_CACHE_DIR = BASE_DIR / 'cache' / 'fallback_dbf'
+LOCAL_WI_ESC_FALLBACK_PATTERNS = [
+    (Path('/home/axgtan/.openclaw/workspace/backups'), 'pre_wi_esc_sa_dupe_delete_*/WI_ESC.FPB'),
+]
+LOCAL_WI_SDR_FALLBACKS = [
+    Path('/home/axgtan/ap-warehouse/uploads/wi_sdr_fresh/WI_SDR.FPB'),
 ]
 DEFAULT_FE_T_DIR_CANDIDATES = [
     Path('/mnt/ssims') / str(datetime.now().year),
@@ -254,24 +262,99 @@ def parse_dbf_date(raw: str | None) -> date | None:
         return None
 
 
+def safe_path_exists(path: Path) -> bool:
+    """Existence check that won't hang indefinitely on a stale CIFS mount."""
+    try:
+        result = subprocess.run(
+            ["timeout", "3", "test", "-e", str(path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
+def latest_backup_lzh() -> Path | None:
+    if not safe_path_exists(BACKUP_LZH_DIR):
+        return None
+    try:
+        candidates = sorted(
+            BACKUP_LZH_DIR.glob('*.LZH'),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return None
+    return candidates[0] if candidates else None
+
+
+def latest_local_fallback_dbf(filename: str) -> Path | None:
+    candidates: list[Path] = []
+    if filename == 'WI_ESC.FPB':
+        for base_dir, pattern in LOCAL_WI_ESC_FALLBACK_PATTERNS:
+            try:
+                candidates.extend(path for path in base_dir.glob(pattern) if safe_path_exists(path))
+            except OSError:
+                pass
+    elif filename == 'WI_SDR.FPB':
+        candidates.extend(path for path in LOCAL_WI_SDR_FALLBACKS if safe_path_exists(path))
+    if not candidates:
+        return None
+    return max(candidates, key=lambda path: path.stat().st_mtime)
+
+
+def extract_backup_dbf(filename: str) -> Path | None:
+    """Extract a DBF from latest LZH, then fall back to known local snapshots."""
+    lzh_path = latest_backup_lzh()
+    if lzh_path is not None:
+        out_dir = FALLBACK_DBF_CACHE_DIR / lzh_path.stem
+        out_path = out_dir / filename
+        if safe_path_exists(out_path):
+            return out_path
+        out_dir.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=str(FALLBACK_DBF_CACHE_DIR)) as tmp:
+            tmp_path = Path(tmp)
+            result = subprocess.run(
+                ['timeout', '120', '7z', 'e', '-y', f'-o{tmp_path}', str(lzh_path), filename],
+                capture_output=True,
+                text=True,
+            )
+            extracted = tmp_path / filename
+            if result.returncode == 0 and extracted.exists():
+                extracted.replace(out_path)
+                print(f'Warning: using fallback {filename} from latest backup {lzh_path.name}')
+                return out_path
+
+    local_fallback = latest_local_fallback_dbf(filename)
+    if local_fallback is not None:
+        print(f'Warning: using local fallback {filename}: {local_fallback}')
+        return local_fallback
+    return None
+
+
 def resolve_wi_esc_path(candidate: str | None) -> Path | None:
     if candidate:
         path = Path(candidate)
-        return path if path.exists() else None
-    for path in DEFAULT_WI_ESC_CANDIDATES:
-        if path.exists():
+        if safe_path_exists(path):
             return path
-    return None
+        return extract_backup_dbf('WI_ESC.FPB')
+    for path in DEFAULT_WI_ESC_CANDIDATES:
+        if safe_path_exists(path):
+            return path
+    return extract_backup_dbf('WI_ESC.FPB')
 
 
 def resolve_wi_sdr_path(candidate: str | None) -> Path | None:
     if candidate:
         path = Path(candidate)
-        return path if path.exists() else None
-    for path in DEFAULT_WI_SDR_CANDIDATES:
-        if path.exists():
+        if safe_path_exists(path):
             return path
-    return None
+        return extract_backup_dbf('WI_SDR.FPB')
+    for path in DEFAULT_WI_SDR_CANDIDATES:
+        if safe_path_exists(path):
+            return path
+    return extract_backup_dbf('WI_SDR.FPB')
 
 
 def dbf_record_count(path: Path) -> int:
@@ -283,12 +366,12 @@ def dbf_record_count(path: Path) -> int:
 def resolve_fe_t_paths(candidate: str | None) -> list[Path]:
     if candidate:
         path = Path(candidate)
-        return [path] if path.exists() else []
+        return [path] if safe_path_exists(path) else []
 
     resolved: list[Path] = []
     seen: set[Path] = set()
     for directory in DEFAULT_FE_T_DIR_CANDIDATES:
-        if not directory.exists():
+        if not safe_path_exists(directory):
             continue
         monthly_files = sorted(
             [
@@ -1402,6 +1485,15 @@ def main() -> int:
     fe_t_path = fe_t_paths[0] if fe_t_paths else None
     if not source_db.exists():
         raise FileNotFoundError(f'Source DB not found: {source_db}')
+    # WI_ESC / WI_SDR only drive fresh acceptance/delivery recency filtering, and
+    # every consumer tolerates a missing source (see load_last_acceptance_dates).
+    # If live is down and no fallback DBF could be resolved, warn loudly but keep
+    # publishing with degraded freshness data — never hard-fail the whole catalog
+    # just because the (optional) recency inputs are unavailable.
+    if args.wi_esc and wi_esc_path is None:
+        print(f'Warning: WI_ESC source unavailable ({args.wi_esc}); publishing without fresh-acceptance recency filtering')
+    if args.wi_sdr and wi_sdr_path is None:
+        print(f'Warning: WI_SDR source unavailable ({args.wi_sdr}); publishing without fresh-delivery recency fallback')
     product_count, department_count, category_count, exclusion_counts, report_path = rebuild_catalog(
         source_db,
         target_db,

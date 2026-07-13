@@ -26,11 +26,8 @@ STOREFRONT_PUBLISH_SCRIPT = STOREFRONT_DIR / "publish_storefront_catalog.py"
 STOREFRONT_TARGET_DB = STOREFRONT_DIR / "storefront_catalog.db"
 STORE_FRONT_WI_ESC_CANDIDATES = [
     Path("/mnt/ssims/SSIMS/WI_ESC.FPB"),
-    Path("/mnt/ssims/SSIMS/WI_ESC.FPB"),
-    Path("/mnt/ssims/SSIMS/WI_ESC.FPB"),
 ]
 STORE_FRONT_WI_SDR_CANDIDATES = [
-    Path("/mnt/ssims/SSIMS/WI_SDR.FPB"),
     Path("/mnt/ssims/SSIMS/WI_SDR.FPB"),
 ]
 UPLOAD_DIR = Path(os.environ.get("WEB_ENCODER_UPLOAD_DIR", str(BASE_DIR / "uploads")))
@@ -342,9 +339,22 @@ def infer_size_parts(size: str | None, weight_volume: str | None, unit: str | No
     return inferred_value, inferred_unit
 
 
+def safe_path_exists(path: Path) -> bool:
+    """Existence check that won't hang indefinitely on a stale CIFS mount."""
+    try:
+        result = subprocess.run(
+            ["timeout", "3", "test", "-e", str(path)],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def first_existing_path(candidates: list[Path]) -> Path | None:
     for path in candidates:
-        if path.exists():
+        if safe_path_exists(path):
             return path
     return None
 
