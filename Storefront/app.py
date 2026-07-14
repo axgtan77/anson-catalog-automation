@@ -385,6 +385,29 @@ ensure_runtime_schema()
 SEARCH_SYNONYMS = search_engine.load_synonyms(BASE_DIR / 'search_synonyms.csv')
 
 
+# Limited-time manufacturer promo SKUs — the same base product as the regular
+# listing but a temporary run (e.g. "1L + free 500ml / tuna / shirt" bundles),
+# so they carry a "Limited Promo" chip. This is a CURATED list, not an auto-rule:
+# the "+FREEBIE" MEDESC pattern is far too noisy to trust blindly (brand names
+# like "A+", ages like "6+", combo packs like "5+1"/"180ML+90ML"). Edit
+# storefront_limited_promo.csv and restart the app to toggle — no republish.
+def load_limited_promo_merkeys(path) -> set[str]:
+    import csv
+    promos: set[str] = set()
+    try:
+        with open(path, newline='', encoding='utf-8-sig') as fh:
+            for row in csv.DictReader(fh):
+                merkey = (row.get('merkey') or '').strip()
+                if merkey:
+                    promos.add(merkey)
+    except FileNotFoundError:
+        pass
+    return promos
+
+
+LIMITED_PROMO_MERKEYS = load_limited_promo_merkeys(BASE_DIR / 'storefront_limited_promo.csv')
+
+
 def warm_search_index() -> None:
     """Build the FTS search index at boot if the catalog changed. Cheap when
     already fresh; failures must never block startup."""
@@ -1723,6 +1746,8 @@ def resolve_price_band(price_band: str | None) -> tuple[str, int | None, int | N
 
 def build_badges(row: sqlite3.Row, is_fresh: bool) -> list[dict]:
     badges: list[dict] = []
+    if str(row['merkey']) in LIMITED_PROMO_MERKEYS:
+        badges.append({'label': 'Limited Promo', 'tone': 'promo'})
     if (row['priority'] or '').strip().upper() == 'TOP':
         badges.append({'label': 'Top Seller', 'tone': 'top'})
     if is_fresh:

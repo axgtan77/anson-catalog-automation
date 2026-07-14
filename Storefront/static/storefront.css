@@ -879,6 +879,7 @@ h2 {
 .badge-top   { background: #FFF3E0; color: #BF360C; }
 .badge-fresh { background: var(--green-light); color: var(--green); }
 .badge-photo { background: var(--red-light); color: var(--red); }
+.badge-promo { background: #F3E5F5; color: #6A1B9A; }
 .product-brand {
     font-size: 0.70rem;
     font-weight: 800;
