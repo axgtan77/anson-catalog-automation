@@ -2,6 +2,7 @@
 
 import argparse
 import csv
+import json
 import re
 import sqlite3
 import struct
@@ -16,6 +17,7 @@ TARGET_DB = BASE_DIR / 'storefront_catalog.db'
 SCHEMA_PATH = BASE_DIR / 'schema.sql'
 OVERRIDES_PATH = BASE_DIR / 'storefront_category_overrides.csv'
 FRESH_DISPLAY_OVERRIDES_PATH = BASE_DIR / 'storefront_fresh_display_overrides.csv'
+FRESH_VARIANTS_PATH = BASE_DIR / 'storefront_fresh_variants.csv'
 DEFAULT_WI_ESC_CANDIDATES = [
     Path('/mnt/ssims/SSIMS/WI_ESC.FPB'),
 ]
@@ -85,7 +87,9 @@ ALPHA_EXCLUDED_L3_CLASSES = {
 # search, or homepage tiles. Keep them in the encoder for inventory/price work.
 STOREFRONT_EXCLUDED_DEPARTMENTS = {
     'Cigarettes',
-    'Liquor',
+    # Liquor is now SELLABLE online (age-restricted: 18+ confirmation at checkout
+    # + valid-ID check at handover, enforced in the storefront app). Cigarettes
+    # remain excluded by policy.
 }
 
 GRAM_PATTERN = re.compile(r"\b(\d+(?:\.\d+)?)\s*(KG|G)\b", re.I)
@@ -147,6 +151,7 @@ def ensure_schema(target_conn: sqlite3.Connection) -> None:
     }
     required_columns = {
         'needs_irl_photo': 'ALTER TABLE products ADD COLUMN needs_irl_photo INTEGER NOT NULL DEFAULT 0',
+        'short_description': 'ALTER TABLE products ADD COLUMN short_description TEXT',
         'last_acceptance_date': 'ALTER TABLE products ADD COLUMN last_acceptance_date TEXT',
         'sellable_state': 'ALTER TABLE products ADD COLUMN sellable_state TEXT',
         'sellable_note': 'ALTER TABLE products ADD COLUMN sellable_note TEXT',
@@ -160,6 +165,7 @@ def ensure_schema(target_conn: sqlite3.Connection) -> None:
         'display_weight_g': 'ALTER TABLE products ADD COLUMN display_weight_g INTEGER',
         'display_price': 'ALTER TABLE products ADD COLUMN display_price REAL',
         'range_label': 'ALTER TABLE products ADD COLUMN range_label TEXT',
+        'fresh_variants': 'ALTER TABLE products ADD COLUMN fresh_variants TEXT',
         'stock_status': "ALTER TABLE products ADD COLUMN stock_status TEXT NOT NULL DEFAULT 'in_stock'",
         'pack_quantity': 'ALTER TABLE products ADD COLUMN pack_quantity INTEGER',
         'show_pack_on_storefront': 'ALTER TABLE products ADD COLUMN show_pack_on_storefront INTEGER NOT NULL DEFAULT 0',
@@ -186,6 +192,8 @@ def ensure_source_schema(source_conn: sqlite3.Connection) -> None:
         row['name']
         for row in source_conn.execute("PRAGMA table_info(products)").fetchall()
     }
+    if 'short_description' not in existing_columns:
+        source_conn.execute("ALTER TABLE products ADD COLUMN short_description TEXT")
     if 'availability_override' not in existing_columns:
         source_conn.execute("ALTER TABLE products ADD COLUMN availability_override TEXT DEFAULT 'AUTO'")
     if 'show_pack_on_storefront' not in existing_columns:
@@ -541,6 +549,18 @@ def determine_fulfillment_profile(
         }
 
     if pricing_basis == 'fixed_pack':
+        label = (base_unit_label or '').strip()
+        # A range label ("60-70g", "350-450g", "0.6-0.8kg") marks a weight-range
+        # item: the weight varies, the price is the fixed top-of-range price, and
+        # the customer is never charged more (Alex's online-weight policy).
+        is_range = bool(re.search(r'\d\s*-\s*\d', label)) and bool(re.search(r'(?i)(kg|g)\b', label))
+        if is_range:
+            return {
+                'fulfillment_type': 'fixed_size_fresh',
+                'order_unit_label': label,
+                'substitution_policy': 'fixed_size',
+                'fulfillment_note': f'Each one is about {label}; priced at the top of that range, so you are never charged more.',
+            }
         return {
             'fulfillment_type': 'fixed_pack',
             'order_unit_label': base_unit_label or 'Pack',
@@ -752,6 +772,15 @@ def load_fresh_display_overrides() -> dict[str, dict[str, object]]:
         except ValueError:
             return None
 
+    def parse_float(value: str | None) -> float | None:
+        text = (value or '').strip()
+        if not text:
+            return None
+        try:
+            return float(text)
+        except ValueError:
+            return None
+
     with FRESH_DISPLAY_OVERRIDES_PATH.open('r', encoding='utf-8-sig', newline='') as handle:
         reader = csv.DictReader(handle)
         for row in reader:
@@ -765,9 +794,42 @@ def load_fresh_display_overrides() -> dict[str, dict[str, object]]:
                 'max_weight_g': parse_int(row.get('max_weight_g')),
                 'display_weight_g': parse_int(row.get('display_weight_g')),
                 'range_label': (row.get('range_label') or '').strip() or None,
+                # Optional explicit shelf price for prepacked items whose pack price
+                # is set/rounded independently of price_retail (e.g. Hibe ₱51/30g).
+                'price': parse_float(row.get('price')),
             }
 
     return overrides
+
+
+def load_fresh_variants() -> dict[str, list[dict[str, object]]]:
+    """Per-item fresh size options from storefront_fresh_variants.csv.
+
+    Returns {merkey: [{'label', 'weight_g', 'is_default'}, ...]}. These weights
+    come from real POS purchase distributions (see generate_fresh_variants.py)
+    and are turned into priced size pills at publish time. Hand edits to the CSV
+    are respected. Missing/empty file simply means no items get size variants.
+    """
+    variants: dict[str, list[dict[str, object]]] = {}
+    if not FRESH_VARIANTS_PATH.exists():
+        return variants
+
+    with FRESH_VARIANTS_PATH.open('r', encoding='utf-8-sig', newline='') as handle:
+        for row in csv.DictReader(handle):
+            merkey = (row.get('merkey') or '').strip()
+            label = (row.get('label') or '').strip()
+            try:
+                weight_g = int(float((row.get('weight_g') or '').strip()))
+            except ValueError:
+                continue
+            if not merkey or not label or weight_g <= 0:
+                continue
+            is_default = (row.get('is_default') or '').strip() in ('1', 'true', 'True', 'yes')
+            estimated = (row.get('estimated') or '').strip() in ('1', 'true', 'True', 'yes')
+            variants.setdefault(merkey, []).append(
+                {'label': label, 'weight_g': weight_g, 'is_default': is_default, 'estimated': estimated}
+            )
+    return variants
 
 
 def parse_size_grams(text: str | None) -> int | None:
@@ -980,12 +1042,13 @@ def classify_fresh_display(
     if override:
         pricing_basis = str(override.get('pricing_basis') or '').strip()
         if pricing_basis == 'fixed_pack':
+            explicit_price = override.get('price')
             return {
                 'pricing_basis': 'fixed_pack',
                 'min_weight_g': None,
                 'max_weight_g': None,
                 'display_weight_g': None,
-                'display_price': float(price_retail),
+                'display_price': float(explicit_price) if explicit_price is not None else float(price_retail),
                 'range_label': override.get('range_label') or row['size'] or None,
             }
         if pricing_basis == 'per_kg':
@@ -1132,6 +1195,7 @@ def fetch_source_rows(source_conn: sqlite3.Connection) -> list[sqlite3.Row]:
         p.name,
         b.name AS brand_name,
         p.description,
+        p.short_description,
         p.source_medesc,
         p.size,
         p.weight_volume,
@@ -1219,6 +1283,7 @@ def rebuild_catalog(
     meat_sales_quantity_averages = load_meat_sales_quantity_averages(fe_t_paths)
     category_overrides = load_category_overrides()
     fresh_display_overrides = load_fresh_display_overrides()
+    fresh_variants_by_merkey = load_fresh_variants()
     departments: dict[int, dict[str, object]] = {}
     categories: dict[int, dict[str, object]] = {}
     product_rows: list[tuple] = []
@@ -1352,6 +1417,58 @@ def rebuild_catalog(
         sellable_state, sellable_note = determine_sellable_state(row, fresh_display)
         fulfillment_profile = determine_fulfillment_profile(row, fresh_display, sellable_state, sellable_note)
 
+        # Fresh size variants: when we have real purchase-weight data for a
+        # per-kg item, offer it as selectable fixed-size pills priced from the
+        # per-kg rate. A fixed size means a fixed price, so the item becomes
+        # cleanly orderable instead of "weighed at fulfillment".
+        fresh_variants_json = None
+        variant_defs = fresh_variants_by_merkey.get((row['merkey'] or '').strip())
+        if (variant_defs and fresh_display
+                and fresh_display.get('pricing_basis') == 'per_kg'
+                and row['price_retail'] is not None):
+            per_kg = float(row['price_retail'])
+            options = [
+                {
+                    'key': f"w{vdef['weight_g']}",
+                    'label': vdef['label'],
+                    'weight_g': vdef['weight_g'],
+                    'price': round(per_kg * vdef['weight_g'] / 1000.0, 2),
+                    'is_default': bool(vdef['is_default']),
+                    'estimated': bool(vdef.get('estimated')),
+                }
+                for vdef in sorted(variant_defs, key=lambda d: d['weight_g'])
+            ]
+            if options:
+                if not any(o['is_default'] for o in options):
+                    options[0]['is_default'] = True
+                fresh_variants_json = json.dumps(options)
+                default_opt = next(o for o in options if o['is_default'])
+                any_estimated = any(o['estimated'] for o in options)
+                fresh_display = dict(fresh_display)
+                fresh_display['display_weight_g'] = default_opt['weight_g']
+                fresh_display['display_price'] = default_opt['price']
+                fresh_display['range_label'] = default_opt['label']
+                sellable_state = 'orderable'
+                if any_estimated:
+                    # Whole bird / whole fish: each one weighs within the band shown.
+                    # Price is FIXED at the top of the range, so the customer is never
+                    # charged more than what they see (Alex's online-weight policy).
+                    sellable_note = 'Each one weighs within the range shown. The price is the fixed price for that range — never more.'
+                    fulfillment_profile = {
+                        'fulfillment_type': 'fixed_size_fresh',
+                        'order_unit_label': default_opt['label'],
+                        'substitution_policy': 'fixed_size',
+                        'fulfillment_note': 'Each one is about the weight shown; priced at the top of that range, so you are never charged more.',
+                    }
+                else:
+                    sellable_note = 'Sold in fixed sizes — pick a size and the price is final.'
+                    fulfillment_profile = {
+                        'fulfillment_type': 'fixed_size_fresh',
+                        'order_unit_label': default_opt['label'],
+                        'substitution_policy': 'fixed_size',
+                        'fulfillment_note': 'Price shown is final for the size you choose. Fresh weights are approximate — we pick the closest.',
+                    }
+
         dept_id = department_lookup.setdefault(dept_name, -(len(department_lookup) + 1))
         category_id = category_lookup.setdefault((dept_name, category_name), next_category_id)
         if category_id == next_category_id:
@@ -1375,7 +1492,7 @@ def rebuild_catalog(
         ).lower()
 
         product_rows.append((
-            row['merkey'], slug, display_name, brand_name, row['description'], row['size'],
+            row['merkey'], slug, display_name, brand_name, row['description'], row['short_description'], row['size'],
             dept_id, dept_name, dept_slug,
             category_id, category_name, category_slug,
             row['price_retail'], row['price_pack'], row['price_case'], row['pack_quantity'], row['show_pack_on_storefront'], row['default_selling_option'], row['exclusive_selling_option'], row['pack_display_label'], row['pack_photo_url'], row['pack_barcode'], row['show_case_on_storefront'], row['case_display_label'], row['case_barcode'], row['case_quantity'], row['case_photo_url'], row['photo_url'], row['data_quality'],
@@ -1394,6 +1511,7 @@ def rebuild_catalog(
             fresh_display.get('display_weight_g'),
             fresh_display.get('display_price'),
             fresh_display.get('range_label'),
+            fresh_variants_json,
             row['active'], search_text,
             row['needs_irl_photo'],
             stock_status,
@@ -1429,16 +1547,16 @@ def rebuild_catalog(
         target_conn.executemany(
             """
             INSERT INTO products (
-                merkey, slug, name, brand, description, size,
+                merkey, slug, name, brand, description, short_description, size,
                 department_id, department_name, department_slug,
                 category_id, category_name, category_slug,
                 price_retail, price_pack, price_case, pack_quantity, show_pack_on_storefront, default_selling_option, exclusive_selling_option, pack_display_label, pack_photo_url, pack_barcode, show_case_on_storefront, case_display_label, case_barcode, case_quantity, case_photo_url, photo_url, status,
                 supplier_name, class_l1_name, class_l2_name, class_l3_name,
                 barcode, all_barcodes, txn_count_24m, qty_sum_24m,
                 last_sale_date, priority, last_acceptance_date, sellable_state, sellable_note, fulfillment_type, order_unit_label, substitution_policy, fulfillment_note, pricing_basis, min_weight_g, max_weight_g,
-                display_weight_g, display_price, range_label, active, search_text, needs_irl_photo, stock_status, alpha_visible
+                display_weight_g, display_price, range_label, fresh_variants, active, search_text, needs_irl_photo, stock_status, alpha_visible
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             product_rows,
         )

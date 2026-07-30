@@ -28,6 +28,7 @@ CREATE TABLE IF NOT EXISTS products (
     name TEXT,
     brand TEXT,
     description TEXT,
+    short_description TEXT,
     size TEXT,
     department_id INTEGER,
     department_name TEXT,
@@ -137,6 +138,7 @@ CREATE TABLE IF NOT EXISTS order_request_items (
     selling_option_key TEXT NOT NULL DEFAULT 'retail',
     selling_option_label TEXT,
     selling_option_barcode TEXT,
+    item_note TEXT,
     created_at TEXT DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(order_request_id) REFERENCES order_requests(id)
 );

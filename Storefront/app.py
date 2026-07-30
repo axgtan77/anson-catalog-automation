@@ -207,7 +207,10 @@ CUSTOMER_NAME_SESSION_KEY = 'storefront_customer_name'
 
 
 def get_conn() -> sqlite3.Connection:
-    conn = sqlite3.connect(STORE_DB_PATH)
+    # timeout=5s sets SQLite's busy handler so concurrent workers wait for a
+    # brief lock (e.g. during a republish write) instead of erroring with
+    # "database is locked". Pairs with WAL journal mode on the catalog DB.
+    conn = sqlite3.connect(STORE_DB_PATH, timeout=5.0)
     conn.row_factory = sqlite3.Row
     return conn
 
@@ -291,6 +294,8 @@ def ensure_runtime_schema() -> None:
             conn.execute("ALTER TABLE order_request_items ADD COLUMN selling_option_label TEXT")
         if 'selling_option_barcode' not in order_item_columns:
             conn.execute("ALTER TABLE order_request_items ADD COLUMN selling_option_barcode TEXT")
+        if 'item_note' not in order_item_columns:
+            conn.execute("ALTER TABLE order_request_items ADD COLUMN item_note TEXT")
         # --- Picker MVP: per-item pick state ---
         if 'pick_status' not in order_item_columns:
             conn.execute("ALTER TABLE order_request_items ADD COLUMN pick_status TEXT NOT NULL DEFAULT 'PENDING'")
@@ -406,6 +411,40 @@ def load_limited_promo_merkeys(path) -> set[str]:
 
 
 LIMITED_PROMO_MERKEYS = load_limited_promo_merkeys(BASE_DIR / 'storefront_limited_promo.csv')
+
+
+# ---- Zero-result search logging -------------------------------------------
+# A customer search that returns nothing is the clearest findability signal —
+# someone wanted something and hit a dead end (a missing product, a cryptic
+# name, or a missing synonym). Logged to a SEPARATE analytics DB so a catalog
+# republish (which DELETEs from the catalog tables) can never wipe it. Strictly
+# best-effort: any failure is swallowed so analytics can never break search.
+ANALYTICS_DB = BASE_DIR / 'storefront_analytics.db'
+
+
+def log_zero_result_search(query: str, department: str = '', price_band: str = '') -> None:
+    q = (query or '').strip()
+    if not q:
+        return
+    try:
+        conn = sqlite3.connect(str(ANALYTICS_DB), timeout=2)
+        try:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS zero_result_searches("
+                "id INTEGER PRIMARY KEY, query TEXT NOT NULL, query_norm TEXT, "
+                "department TEXT, price_band TEXT, created_at TEXT)"
+            )
+            conn.execute(
+                "INSERT INTO zero_result_searches(query, query_norm, department, price_band, created_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (q, q.lower(), department or '', price_band or '',
+                 datetime.now().isoformat(timespec='seconds')),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception:
+        pass
 
 
 def warm_search_index() -> None:
@@ -1139,6 +1178,7 @@ def get_cart() -> dict[str, dict]:
             'price': price,
             'barcode': (value.get('barcode') or None),
             'photo_url': (value.get('photo_url') or None),
+            'note': (value.get('note') or '').strip()[:300],
         }
     return cart
 
@@ -1798,12 +1838,15 @@ def build_fulfillment(product_row: sqlite3.Row, availability: dict, display_size
         'catalog_only': 'Catalog only',
         'variable_weight': 'Variable weight',
         'fixed_pack': 'Fixed pack',
+        'fixed_size_fresh': 'Fresh item',
         'standard': 'Standard item',
     }
     substitution_labels = {
         'not_applicable': 'Ordering not enabled',
         'confirm_at_fulfillment': 'Final quantity confirmed by staff',
         'fixed_pack': 'Published pack only',
+        'fixed_size': 'Fixed price per size',
+        'by_weight': 'Final price by actual weight',
         'standard': 'Standard shelf item',
     }
 
@@ -1828,9 +1871,61 @@ def build_price_subtext(row: sqlite3.Row, card_price: float | None) -> str | Non
     price_retail = row['price_retail']
     if pricing_basis == 'per_kg' and price_retail is not None:
         return f"P{price_retail:,.2f}/kg"
+    # Fixed packs show one clean pack price; the per-kg "base price" would just
+    # confuse customers (e.g. "₱1,700 base price" under a ₱119 pusit pack).
+    if pricing_basis == 'fixed_pack':
+        return None
     if card_price is not None and price_retail is not None and card_price != price_retail:
         return f"P{price_retail:,.2f} base price"
     return None
+
+
+def build_fresh_variant_options(row: sqlite3.Row, photo_url: str) -> list[dict]:
+    """Size pills for a fresh per-kg item, from its published fresh_variants JSON.
+
+    Each variant is a fixed weight at a fixed price (computed at publish time
+    from the per-kg rate), so the item is sold as clean, selectable sizes — the
+    Builtamart-style "Variants" experience — rather than a single weighed price.
+    Returns [] for non-fresh items or items without curated variants.
+    """
+    if 'fresh_variants' not in row.keys() or not row['fresh_variants']:
+        return []
+    try:
+        variants = json.loads(row['fresh_variants'])
+    except (ValueError, TypeError):
+        return []
+    options = []
+    for v in variants:
+        try:
+            options.append({
+                'key': str(v['key']),
+                'label': str(v['label']),
+                'price': float(v['price']),
+                'barcode': (row['barcode'] or '').strip() or None,
+                'photo_url': photo_url,
+                'size_label': str(v['label']),
+                'weight_g': v.get('weight_g'),
+                'is_default': bool(v.get('is_default')),
+                'estimated': bool(v.get('estimated')),
+                'staff_only': False,
+            })
+        except (KeyError, TypeError, ValueError):
+            continue
+    return options
+
+
+def looks_like_pos_code(text: str | None) -> bool:
+    """True when a product 'description' is actually a raw POS MEDESC — an
+    all-caps pack/promo code like 'ALFONSO LIGHT 1L/12' or
+    'ALFONSO LIGHT 1L/4/3+PF CB150G' — rather than a real customer description.
+    Those expose internal pack/promo notation to shoppers, so we hide them from
+    'About this product'. Conservative: any lowercase letter means it's real
+    prose and is kept; we only suppress uppercase strings that carry the
+    tell-tale slash-count pack notation (a "/" immediately followed by a digit)."""
+    t = (text or '').strip()
+    if not t or any(c.islower() for c in t):
+        return False
+    return any(t[i] == '/' and t[i + 1].isdigit() for i in range(len(t) - 1))
 
 
 def build_product_dict(row: sqlite3.Row) -> dict:
@@ -1872,19 +1967,29 @@ def build_product_dict(row: sqlite3.Row) -> dict:
             or (_retail_val > 0 and float(pack_price) < _retail_val * 1.5)
         )
     )
+    # Fresh size variants take over the option list entirely: a fresh per-kg item
+    # with curated sizes is sold as those sizes (e.g. 250g / 500g), not as a
+    # piece/pack/case. Everything downstream (cart, picker) already speaks
+    # "selling option", so these slot in transparently.
+    fresh_variant_options = build_fresh_variant_options(row, photo_url)
     selling_options = []
-    if row['price_retail'] is not None:
+    if fresh_variant_options:
+        selling_options = fresh_variant_options
+    elif row['price_retail'] is not None:
+        # Charge what's displayed: card_price = the shelf/display price (e.g. a
+        # fixed_pack's explicit pack price ₱119), falling back to price_retail.
+        # Using price_retail directly would charge the per-kg rate for a small pack.
         selling_options.append({
             'key': 'retail',
             'label': 'Piece',
-            'price': float(row['price_retail']),
+            'price': float(card_price if card_price is not None else row['price_retail']),
             'barcode': (row['barcode'] or '').strip() or None,
             'photo_url': photo_url,
             'size_label': display_size or None,
             'is_default': default_selling_option != 'pack',
             'staff_only': False,
         })
-    if show_pack_price and pack_price is not None and float(pack_price) > 0:
+    if not fresh_variant_options and show_pack_price and pack_price is not None and float(pack_price) > 0:
         selling_options.append({
             'key': 'pack',
             'label': pack_label or 'Pack / Box',
@@ -1896,7 +2001,7 @@ def build_product_dict(row: sqlite3.Row) -> dict:
             'is_default': default_selling_option == 'pack',
             'staff_only': pack_is_cold,
         })
-    if show_case_price and case_price is not None and float(case_price) > 0:
+    if not fresh_variant_options and show_case_price and case_price is not None and float(case_price) > 0:
         selling_options.append({
             'key': 'case',
             'label': case_label or 'Case / Sack',
@@ -1927,27 +2032,44 @@ def build_product_dict(row: sqlite3.Row) -> dict:
         'slug': row['slug'] or slugify(row['name'] or ''),
         'name': row['name'] or '',
         'brand': row['brand'] or '',
-        'description': row['description'] or '',
+        # "About this product": prefer a hand-written short_description; otherwise
+        # fall back to the raw description (blanked when it's just a POS code echo).
+        'description': (
+            (row['short_description'] or '').strip()
+            if ('short_description' in row.keys() and (row['short_description'] or '').strip())
+            else ('' if looks_like_pos_code(row['description']) else (row['description'] or ''))
+        ),
+        'short_description': (row['short_description'] or '').strip() if 'short_description' in row.keys() else '',
         'department_name': row['department_name'] or '',
         'department_slug': department_slug,
         'category_name': row['category_name'] or '',
         'category_slug': row['category_slug'] or '',
         'class_l2_name': row['class_l2_name'] or '',
         'class_l3_name': row['class_l3_name'] or '',
+        # Adult-only (18+): the Liquor department, EXCEPT the Lighter & Fluids
+        # class (chafing/cooking fuel) which is filed under Liquor in the POS
+        # taxonomy but isn't alcohol.
+        'age_restricted': (
+            (row['department_name'] or '').strip() == 'Liquor'
+            and 'LIGHTER' not in (row['class_l3_name'] or '').upper()
+        ),
         'card_price': (default_option.get('price') if default_option else card_price) or 0.0,
         'price_retail': row['price_retail'],
         'price_subtext': (
+            # Fresh size variants show the per-kg rate as helpful context ("P150.00/kg")
+            # under the chosen size price — customer-facing, like other per-kg items.
             build_price_subtext(row, card_price)
-            if not default_option or default_option.get('key') == 'retail'
+            if not default_option or default_option.get('key') == 'retail' or fresh_variant_options
             # Exclusive items hide the per-piece price entirely; otherwise show
             # it as context beneath the default (pack/case) price.
             else ('' if exclusive_selling_option else f"P{float(row['price_retail'] or 0):,.2f} piece price")
         ),
         # The "piece price" context line under a pack/case default is a duplicate
         # second price for customers — keep it staff-only. The per-kg subtext
-        # (fresh items) stays customer-facing.
+        # (fresh items, incl. size variants) stays customer-facing.
         'price_subtext_staff_only': bool(
-            default_option and default_option.get('key') != 'retail' and not exclusive_selling_option
+            default_option and default_option.get('key') != 'retail'
+            and not exclusive_selling_option and not fresh_variant_options
         ),
         'show_pack_on_storefront': show_pack_price,
         'pack_option': pack_option,
@@ -1955,6 +2077,14 @@ def build_product_dict(row: sqlite3.Row) -> dict:
         'default_selling_option': default_option.get('key') if default_option else 'retail',
         'default_selling_option_label': default_option.get('label') if default_option else 'Piece',
         'selling_options': selling_options,
+        'has_size_variants': bool(fresh_variant_options),
+        # Weight-range item (e.g. "350-450g", "0.6-0.8kg"): show the "priced at the
+        # top of the range" note to customers even for single-price fixed packs.
+        'is_weight_range': ('-' in (display_size or '')) and (
+            (display_size or '').strip().lower().endswith('g') or 'kg' in (display_size or '').lower()
+        ),
+        # Whole birds / weight-band items show an estimated price (≈), finalised by weight.
+        'price_is_estimated': bool(default_option and default_option.get('estimated')),
         'display_size': display_size,
         'size': row['size'] or '',
         'photo_url': photo_url,
@@ -2377,6 +2507,15 @@ def fetch_products_by_merkeys(merkeys: list[str]) -> list[dict]:
         conn.close()
 
 
+AGE_RESTRICTED_DEPARTMENTS = {'Liquor'}
+
+
+def is_age_restricted(product: dict) -> bool:
+    """Adult-only (18+) items — currently the Liquor department. Enforced via a
+    checkout confirmation + an ID check at handover."""
+    return (product.get('department_name') or '').strip() in AGE_RESTRICTED_DEPARTMENTS
+
+
 def build_cart_items() -> list[dict]:
     cart = get_cart()
     if not cart:
@@ -2409,6 +2548,8 @@ def build_cart_items() -> list[dict]:
             'option_photo_url': photo_url,
             'unit_price': unit_price,
             'line_price': unit_price * line['qty'],
+            'note': line.get('note') or '',
+            'age_restricted': bool(product.get('age_restricted')),
         })
     return items
 
@@ -2462,8 +2603,8 @@ def create_order_request(
                     order_request_id, merkey, product_name, brand, requested_qty, original_requested_qty,
                     order_unit_label, pricing_basis, quoted_price, original_quoted_price, sellable_state,
                     fulfillment_type, fulfillment_note, removed,
-                    selling_option_key, selling_option_label, selling_option_barcode
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    selling_option_key, selling_option_label, selling_option_barcode, item_note
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -2484,6 +2625,7 @@ def create_order_request(
                         item.get('option_key') or 'retail',
                         item.get('option_label') or None,
                         item.get('option_barcode') or None,
+                        item.get('note') or None,
                     )
                     for item in cart_items
                 ],
@@ -2664,8 +2806,8 @@ def replace_order_request_items(
                     order_request_id, merkey, product_name, brand, requested_qty, original_requested_qty,
                     order_unit_label, pricing_basis, quoted_price, original_quoted_price, sellable_state,
                     fulfillment_type, fulfillment_note, removed,
-                    selling_option_key, selling_option_label, selling_option_barcode
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    selling_option_key, selling_option_label, selling_option_barcode, item_note
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 [
                     (
@@ -2686,6 +2828,7 @@ def replace_order_request_items(
                         item.get('option_key') or 'retail',
                         item.get('option_label') or None,
                         item.get('option_barcode') or None,
+                        item.get('note') or None,
                     )
                     for item in cart_items
                 ],
@@ -2797,7 +2940,7 @@ def fetch_order_request(request_code: str) -> dict | None:
                    pricing_basis, quoted_price, original_quoted_price, sellable_state, fulfillment_type,
                    fulfillment_note, removed, removal_reason, created_at,
                    COALESCE(NULLIF(selling_option_key, ''), 'retail') AS selling_option_key,
-                   selling_option_label, selling_option_barcode,
+                   selling_option_label, selling_option_barcode, item_note,
                    COALESCE(NULLIF(pick_status, ''), 'PENDING') AS pick_status,
                    picked_at, picked_by
             FROM order_request_items
@@ -3845,6 +3988,9 @@ def add_to_cart(merkey: str):
 
     quantity = max(request.form.get('quantity', 1, type=int) or 1, 1)
     requested_option = (request.form.get('selected_option') or 'retail').strip() or 'retail'
+    # Per-item special instructions (e.g. "please debone"). Travels with the line
+    # through the cart → order → picker so staff see it on that specific item.
+    item_note = (request.form.get('item_note') or '').strip()[:300]
     selling_options = product.get('selling_options') or []
     chosen = next((opt for opt in selling_options if opt.get('key') == requested_option), None)
     if chosen is None:
@@ -3862,6 +4008,9 @@ def add_to_cart(merkey: str):
     cart = get_cart()
     existing = cart.get(line_key)
     new_qty = (existing.get('qty', 0) if existing else 0) + quantity
+    # Keep any existing note if this add didn't supply a new one (re-adding the
+    # same item shouldn't wipe instructions the customer already typed).
+    note = item_note or (existing.get('note') if existing else '') or ''
     cart[line_key] = {
         'merkey': merkey,
         'qty': new_qty,
@@ -3870,6 +4019,7 @@ def add_to_cart(merkey: str):
         'price': float(chosen.get('price') or 0.0),
         'barcode': chosen.get('barcode'),
         'photo_url': chosen.get('photo_url'),
+        'note': note,
     }
     save_cart(cart)
     cart_count = get_cart_count()
@@ -3891,12 +4041,15 @@ def update_cart():
     cart = get_cart()
     for line_key in list(cart.keys()):
         qty = request.form.get(f'qty_{line_key}', type=int)
-        if qty is None:
-            continue
-        if qty <= 0:
-            cart.pop(line_key, None)
-        else:
+        if qty is not None:
+            if qty <= 0:
+                cart.pop(line_key, None)
+                continue
             cart[line_key]['qty'] = qty
+        # Per-item note is editable on the cart page too.
+        note = request.form.get(f'note_{line_key}')
+        if note is not None and line_key in cart:
+            cart[line_key]['note'] = note.strip()[:300]
     save_cart(cart)
     # Milestone 5: the redesigned cart's qty stepper hits this endpoint
     # over AJAX. Return live totals so the page can update without a
@@ -4038,6 +4191,7 @@ def checkout_page():
             earn_pts=earn_pts,
             available_slots=fetch_available_slots(days_ahead=3),
             selected_slot_id=selected_slot_id,
+            cart_has_age_restricted=any(item.get('age_restricted') for item in cart_items),
         )
 
     if request.method == 'POST':
@@ -4100,6 +4254,19 @@ def checkout_page():
             flash('Please pick a pickup window.', 'error')
             return render_checkout(form_data, selected_slot_id=None,
                                    redeem_points_value=redeem_points)
+
+        # Age restriction: liquor requires an 18+ confirmation at checkout; the
+        # actual enforcement is an ID check by staff at handover.
+        cart_has_age_restricted = any(item.get('age_restricted') for item in cart_items)
+        if cart_has_age_restricted and not (request.form.get('age_confirm') or '').strip():
+            flash('This order contains age-restricted items (alcohol). Please confirm you are 18+ '
+                  'and will present a valid ID at pickup/delivery.', 'error')
+            return render_checkout(form_data, selected_slot_id=pickup_slot_id,
+                                   redeem_points_value=redeem_points)
+        if cart_has_age_restricted:
+            _age_note = ('AGE-RESTRICTED (alcohol): customer confirmed 18+ online — VERIFY VALID ID '
+                         'at handover.')
+            fulfillment_notes = f'{fulfillment_notes} | {_age_note}' if fulfillment_notes else _age_note
 
         # Phase C — re-validate the requested redemption at submit time. The
         # balance the customer saw on the GET may have moved (e.g. they redeemed
@@ -5367,6 +5534,9 @@ def search():
         did_you_mean = result['did_you_mean']
         suggestions = result['suggestions']
         search_mode = result['mode']
+        # Findability signal: a query that returned nothing on the first page.
+        if not products and page == 1:
+            log_zero_result_search(q, active_department, active_price_band)
     elif has_filters:
         # No query, just department/price browsing — relevance has nothing to
         # rank against, so use the standard filtered browse.
